@@ -1,0 +1,100 @@
+package com.example.shazamytdl.download
+
+import android.content.Context
+import android.util.Log
+import com.yausername.aria2c.Aria2c
+import com.yausername.ffmpeg.FFmpeg
+import com.yausername.youtubedl_android.YoutubeDL
+import com.yausername.youtubedl_android.YoutubeDLRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.UUID
+
+object YoutubeDlBridge {
+    @Volatile
+    private var initialized = false
+
+    @Synchronized
+    fun init(context: Context) {
+        if (initialized) return
+        val appContext = context.applicationContext
+        try {
+            YoutubeDL.getInstance().init(appContext)
+            FFmpeg.getInstance().init(appContext)
+            Aria2c.getInstance().init(appContext)
+            initialized = true
+        } catch (e: Exception) {
+            Log.e("YoutubeDlBridge", "Failed to initialize YoutubeDL", e)
+        }
+    }
+
+    suspend fun updateYoutubeDL(context: Context): String? = withContext(Dispatchers.IO) {
+        try {
+            init(context)
+            Log.d("YoutubeDlBridge", "Checking for yt-dlp updates...")
+            val result = YoutubeDL.getInstance().updateYoutubeDL(context)
+            Log.d("YoutubeDlBridge", "yt-dlp update result: ${result?.name}")
+            return@withContext result?.name
+        } catch (e: Exception) {
+            Log.e("YoutubeDlBridge", "Failed to update YoutubeDL", e)
+            return@withContext null
+        }
+    }
+
+    fun downloadAllowedUrl(
+        context: Context,
+        url: String,
+        outputDir: File,
+        subPath: String? = null,
+        onProgress: (progressPercent: Float, etaSeconds: Long) -> Unit
+    ): File {
+        init(context)
+
+        check(outputDir.exists() || outputDir.mkdirs()) {
+            "Could not create output directory: ${outputDir.absolutePath}"
+        }
+        val before = outputDir.listFiles()
+            ?.filter { it.isFile }
+            ?.associate { it.absolutePath to (it.lastModified() to it.length()) }
+            .orEmpty()
+        val fileNameTemplate = (subPath ?: "%(title).180s")
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        val outputTemplate = File(outputDir, "$fileNameTemplate.%(ext)s").absolutePath
+
+        val request = YoutubeDLRequest(url).apply {
+            addOption("--no-playlist")
+            addOption("--restrict-filenames")
+            addOption("-x")
+            addOption("--audio-format", "mp3")
+            addOption("--audio-quality", "0")
+            addOption("--add-metadata")
+            addOption("-o", outputTemplate)
+            addOption("--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+            addOption("--no-check-certificate")
+            addOption("--prefer-free-formats")
+            addOption("--referer", "https://www.google.com/")
+            addOption("--verbose")
+        }
+
+        val processId = "download-${UUID.randomUUID()}"
+        Log.d("YoutubeDlBridge", "Starting download: $url")
+        Log.d("YoutubeDlBridge", "Process ID: $processId")
+        YoutubeDL.getInstance().execute(request, processId) { progress, etaInSeconds, _ ->
+            onProgress(progress, etaInSeconds)
+        }
+
+        val candidates = outputDir.listFiles()
+            ?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
+            .orEmpty()
+        val changedCandidates = candidates.filter { file ->
+            before[file.absolutePath] != (file.lastModified() to file.length())
+        }
+
+        // This directory belongs to one track only. Prefer output changed by this
+        // execution, but accept an existing complete file reused by yt-dlp.
+        return (changedCandidates.ifEmpty { candidates })
+            .maxByOrNull { it.lastModified() }
+            ?: error("Download finished but an MP3 output file was not found")
+    }
+}

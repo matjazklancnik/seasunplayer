@@ -1,0 +1,57 @@
+package com.example.shazamytdl.player
+
+import android.content.Context
+import android.net.Uri
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import java.io.File
+
+class PlayerHolder(context: Context) {
+    val player = ExoPlayer.Builder(context).build()
+    
+    private val _currentTrackId = MutableStateFlow<String?>(null)
+    val currentTrackId: StateFlow<String?> = _currentTrackId
+
+    fun playLocalFile(trackId: String, path: String) {
+        val file = File(path)
+        if (!file.exists()) return
+        
+        if (_currentTrackId.value == trackId) {
+            if (player.playbackState == Player.STATE_ENDED) {
+                player.seekTo(0)
+            }
+            player.play()
+            return
+        }
+
+        _currentTrackId.value = trackId
+        player.setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+        player.prepare()
+        player.play()
+    }
+
+    fun togglePlayback(trackId: String, path: String) {
+        if (_currentTrackId.value == trackId && player.isPlaying) player.pause()
+        else playLocalFile(trackId, path)
+    }
+
+    fun pause() {
+        player.pause()
+    }
+
+    fun stop() {
+        player.pause()
+        player.seekTo(0)
+    }
+
+    fun release() {
+        player.release()
+    }
+    
+    fun seekTo(positionMs: Long) {
+        player.seekTo(positionMs)
+    }
+}
