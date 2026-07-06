@@ -7,6 +7,7 @@ import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -17,6 +18,14 @@ data class DownloadedMedia(
     val file: File,
     val sourceUrl: String,
     val thumbnailUrl: String?
+)
+
+data class YouTubeSearchResult(
+    val videoId: String,
+    val title: String,
+    val channel: String,
+    val url: String,
+    val durationSeconds: Long?
 )
 
 object YoutubeDlBridge {
@@ -49,6 +58,51 @@ object YoutubeDlBridge {
         } catch (e: Exception) {
             Log.e("YoutubeDlBridge", "Failed to update YoutubeDL", e)
             return@withContext null
+        }
+    }
+
+    fun searchYouTube(
+        context: Context,
+        query: String,
+        maxResults: Int = 5
+    ): List<YouTubeSearchResult> {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.isBlank()) return emptyList()
+        init(context)
+
+        val request = YoutubeDLRequest("ytsearch${maxResults.coerceIn(1, 10)}:$normalizedQuery").apply {
+            addOption("--flat-playlist")
+            addOption("--dump-single-json")
+            addOption("--skip-download")
+            addOption("--ignore-errors")
+            addOption("--no-warnings")
+            addNetworkOptions()
+        }
+        val response = synchronized(operationLock) {
+            YoutubeDL.getInstance().execute(request)
+        }
+        val entries = JSONObject(response.out).optJSONArray("entries") ?: return emptyList()
+
+        return buildList {
+            for (index in 0 until entries.length()) {
+                val entry = entries.optJSONObject(index) ?: continue
+                val videoId = entry.optString("id").takeIf { it.isNotBlank() } ?: continue
+                val title = entry.optString("title").takeIf { it.isNotBlank() } ?: continue
+                val channel = sequenceOf("channel", "uploader", "channel_id", "uploader_id")
+                    .map(entry::optString)
+                    .firstOrNull { it.isNotBlank() }
+                    ?: "YouTube"
+                val duration = entry.optLong("duration", -1L).takeIf { it >= 0L }
+                add(
+                    YouTubeSearchResult(
+                        videoId = videoId,
+                        title = title,
+                        channel = channel,
+                        url = "https://www.youtube.com/watch?v=$videoId",
+                        durationSeconds = duration
+                    )
+                )
+            }
         }
     }
 

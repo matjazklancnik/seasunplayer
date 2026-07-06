@@ -89,6 +89,7 @@ import com.example.shazamytdl.data.TrackStatus
 import com.example.shazamytdl.download.DownloadQueueEvent
 import com.example.shazamytdl.download.DownloadQueueManager
 import com.example.shazamytdl.download.YoutubeDlBridge
+import com.example.shazamytdl.download.YouTubeSearchResult
 import com.example.shazamytdl.importer.ShazamCsvImporter
 import com.example.shazamytdl.player.PlayerHolder
 import com.example.shazamytdl.ui.theme.ShazamYtdlTheme
@@ -152,6 +153,10 @@ private fun MainScreen(
     var isPlaying by remember { mutableStateOf(false) }
     var playerPositionMs by remember { mutableStateOf(0L) }
     var playerDurationMs by remember { mutableStateOf(0L) }
+    var youtubeSearchResults by remember { mutableStateOf(emptyList<YouTubeSearchResult>()) }
+    var isYoutubeSearchLoading by remember { mutableStateOf(false) }
+    var youtubeSearchCompleted by remember { mutableStateOf(false) }
+    var youtubeSearchError by remember { mutableStateOf<String?>(null) }
 
     val visibleTracks = remember(tracks, searchQuery) {
         val query = searchQuery.normalizedForSearch()
@@ -163,6 +168,31 @@ private fun MainScreen(
                     track.artist.normalizedForSearch().contains(query)
             }
         }
+    }
+
+    LaunchedEffect(searchQuery, visibleTracks.isEmpty()) {
+        youtubeSearchResults = emptyList()
+        youtubeSearchError = null
+        youtubeSearchCompleted = false
+        val query = searchQuery.trim()
+        if (query.length < 2 || visibleTracks.isNotEmpty()) {
+            isYoutubeSearchLoading = false
+            return@LaunchedEffect
+        }
+
+        isYoutubeSearchLoading = true
+        delay(600)
+        runCatching {
+            withContext(Dispatchers.IO) {
+                YoutubeDlBridge.searchYouTube(context, query)
+            }
+        }.onSuccess { results ->
+            youtubeSearchResults = results
+        }.onFailure { error ->
+            youtubeSearchError = error.message ?: error.toString()
+        }
+        isYoutubeSearchLoading = false
+        youtubeSearchCompleted = true
     }
 
     LaunchedEffect(playerHolder) {
@@ -400,15 +430,48 @@ private fun MainScreen(
 
         Spacer(Modifier.height(8.dp))
 
-        if (tracks.isEmpty()) {
-            EmptyState()
-        } else if (visibleTracks.isEmpty()) {
-            Text(
-                text = "Ni skladb, ki ustrezajo iskanju.",
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+        if (visibleTracks.isEmpty() && searchQuery.isNotBlank()) {
+            YouTubeSearchSection(
+                query = searchQuery,
+                results = youtubeSearchResults,
+                isLoading = isYoutubeSearchLoading,
+                searchCompleted = youtubeSearchCompleted,
+                error = youtubeSearchError,
+                onDownload = { result ->
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.POST_NOTIFICATIONS
+                        ) != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notificationPermissionLauncher.launch(
+                            Manifest.permission.POST_NOTIFICATIONS
+                        )
+                    }
+                    val track = Track(
+                        id = stableTrackId(result.title, result.channel),
+                        title = result.title,
+                        artist = result.channel,
+                        sourceUrl = result.url,
+                        status = TrackStatus.URL_SET
+                    )
+                    scope.launch(Dispatchers.IO) {
+                        repository.upsert(track)
+                        val added = DownloadQueueManager.enqueue(track.id)
+                        withContext(Dispatchers.Main) {
+                            refreshTracks()
+                            searchQuery = ""
+                            message = if (added) {
+                                "YouTube skladba je dodana v čakalno vrsto."
+                            } else {
+                                "Skladba je že v čakalni vrsti."
+                            }
+                        }
+                    }
+                }
             )
+        } else if (tracks.isEmpty()) {
+            EmptyState()
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(visibleTracks, key = { it.id }) { track ->
@@ -812,6 +875,83 @@ private fun YouTubePlaylistDialog(
             TextButton(onClick = onDismiss) { Text("Prekliči") }
         }
     )
+}
+
+@Composable
+private fun YouTubeSearchSection(
+    query: String,
+    results: List<YouTubeSearchResult>,
+    isLoading: Boolean,
+    searchCompleted: Boolean,
+    error: String?,
+    onDownload: (YouTubeSearchResult) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            text = "Ni lokalnih zadetkov · rezultati YouTube",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        when {
+            query.trim().length < 2 -> Text(
+                "Za iskanje na YouTubu vnesi vsaj 2 znaka.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            isLoading -> Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text("Iščem na YouTubu …")
+            }
+            error != null -> Text(
+                text = "YouTube iskanje ni uspelo: " + error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            searchCompleted && results.isEmpty() -> Text(
+                "Tudi na YouTubu ni bilo zadetkov.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(results, key = { it.videoId }) { result ->
+                    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = result.title,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = result.channel + result.durationSeconds?.let {
+                                        " · " + formatTime(it * 1_000L)
+                                    }.orEmpty(),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(onClick = { onDownload(result) }) {
+                                Icon(
+                                    Icons.Default.CloudDownload,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("Prenesi")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

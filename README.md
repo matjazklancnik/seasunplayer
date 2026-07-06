@@ -15,6 +15,7 @@ pomnilniku aplikacije.
 - odstranjevanje podvojenih skladb po normaliziranem izvajalcu in naslovu,
 - ročno dodajanje izvajalca in naslova,
 - lokalna SQLite zbirka skladb in stanj prenosa,
+- rezervno iskanje javnih YouTube zadetkov, kadar lokalno iskanje nima zadetkov,
 - zaporedna čakalna vrsta za prenose,
 - premik poljubne čakajoče skladbe na naslednje mesto z gumbom **Naslednja**,
 - en samodejni ponovni poskus neuspelega prenosa na koncu vrste,
@@ -71,6 +72,14 @@ zapisa:
 Če skladba že obstaja, uvoz ne ustvari nove vrstice. Nov veljaven URL se lahko
 doda obstoječemu zapisu, lokalna pot in stanje že prenesene skladbe pa se ne
 izgubita.
+
+### Iskanje lokalno in na YouTubu
+
+Iskalno polje najprej filtrira lokalno knjižnico. Če po najmanj dveh znakih ni
+lokalnega zadetka, aplikacija po kratkem zamiku prek obstoječega yt-dlp prikaže
+do pet javnih YouTube zadetkov. To iskanje ne potrebuje prijave ali API ključa.
+Gumb **Prenesi** izbrani zadetek doda v lokalno knjižnico z neposrednim YouTube
+URL-jem in ga uvrsti v čakalno vrsto.
 
 ### Zasebni YouTube seznami
 
