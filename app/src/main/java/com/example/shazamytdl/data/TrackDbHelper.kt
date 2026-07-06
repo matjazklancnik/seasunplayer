@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import androidx.core.database.sqlite.transaction
 import java.io.File
 import java.text.Collator
 import java.util.Locale
@@ -99,15 +100,11 @@ class TrackRepository(context: Context) {
         var added = 0
         var existing = 0
 
-        db.beginTransaction()
-        try {
+        db.transaction {
             uniqueTracks.forEach { track ->
                 if (getById(track.id) == null) added++ else existing++
                 upsert(track)
             }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
         }
 
         return ImportResult(

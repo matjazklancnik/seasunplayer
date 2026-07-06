@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.example.shazamytdl"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.example.shazamytdl"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
     }
@@ -39,7 +39,22 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            keepDebugSymbols += setOf(
+                "**/libandroidx.graphics.path.so",
+                "**/libffmpeg.so",
+                "**/libffmpeg.zip.so",
+                "**/libffprobe.so",
+                "**/libpython.so",
+                "**/libpython.zip.so",
+                "**/libqjs.so"
+            )
         }
+    }
+
+    lint {
+        // AGP 9.2.1 officially defaults to Gradle 9.4.1. Newer Gradle 9.6.1
+        // exposes an AGP-internal deprecation that project code cannot fix.
+        disable += "AndroidGradlePluginVersion"
     }
 
     compileOptions {
@@ -57,16 +72,16 @@ dependencies {
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
-    implementation("androidx.activity:activity-compose:1.11.0")
+    implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
-    implementation("androidx.core:core-ktx:1.17.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("androidx.core:core-ktx:1.19.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("com.google.android.gms:play-services-auth:21.6.0")
 
     val media3Version = "1.10.1"

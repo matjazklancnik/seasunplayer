@@ -66,6 +66,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -83,6 +84,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import com.example.shazamytdl.data.Track
 import com.example.shazamytdl.data.TrackRepository
 import com.example.shazamytdl.data.TrackStatus
@@ -151,8 +153,8 @@ private fun MainScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var playingTrackId by remember { mutableStateOf<String?>(null) }
     var isPlaying by remember { mutableStateOf(false) }
-    var playerPositionMs by remember { mutableStateOf(0L) }
-    var playerDurationMs by remember { mutableStateOf(0L) }
+    var playerPositionMs by remember { mutableLongStateOf(0L) }
+    var playerDurationMs by remember { mutableLongStateOf(0L) }
     var youtubeSearchResults by remember { mutableStateOf(emptyList<YouTubeSearchResult>()) }
     var isYoutubeSearchLoading by remember { mutableStateOf(false) }
     var youtubeSearchCompleted by remember { mutableStateOf(false) }
@@ -983,7 +985,7 @@ private fun TrackCard(
     onDelete: () -> Unit,
     onShowError: (String) -> Unit
 ) {
-    var fileDurationMs by remember(track.localPath) { mutableStateOf(0L) }
+    var fileDurationMs by remember(track.localPath) { mutableLongStateOf(0L) }
     var draggedPositionMs by remember(track.id) { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(track.localPath) {
@@ -1273,7 +1275,7 @@ private fun SourceUrlDialog(
 }
 
 private fun isYoutubeUrl(value: String): Boolean {
-    val uri = runCatching { Uri.parse(value) }.getOrNull() ?: return false
+    val uri = runCatching { value.toUri() }.getOrNull() ?: return false
     if (uri.scheme != "https" && uri.scheme != "http") return false
     val host = uri.host?.lowercase() ?: return false
     return host == "youtu.be" || host == "youtube.com" || host.endsWith(".youtube.com")

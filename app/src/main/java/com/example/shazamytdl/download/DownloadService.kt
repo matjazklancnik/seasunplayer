@@ -34,7 +34,7 @@ class DownloadService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_launcher)
             .setContentTitle("SunSea Player")
             .setContentText("Prenos glasbe poteka")
             .setContentIntent(openAppIntent)
