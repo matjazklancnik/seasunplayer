@@ -102,6 +102,7 @@ import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.Scope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -183,18 +184,21 @@ private fun MainScreen(
         }
 
         isYoutubeSearchLoading = true
-        delay(600)
-        runCatching {
-            withContext(Dispatchers.IO) {
+        try {
+            delay(600)
+            val results = withContext(Dispatchers.IO) {
                 YoutubeDlBridge.searchYouTube(context, query)
             }
-        }.onSuccess { results ->
             youtubeSearchResults = results
-        }.onFailure { error ->
+            youtubeSearchCompleted = true
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
             youtubeSearchError = error.message ?: error.toString()
+            youtubeSearchCompleted = true
+        } finally {
+            isYoutubeSearchLoading = false
         }
-        isYoutubeSearchLoading = false
-        youtubeSearchCompleted = true
     }
 
     LaunchedEffect(playerHolder) {
