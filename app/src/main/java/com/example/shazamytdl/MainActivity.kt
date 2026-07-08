@@ -441,7 +441,8 @@ private fun MainScreen(
         ) {
             ElevatedCard(
                 colors = CardDefaults.elevatedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+                    contentColor = MaterialTheme.colorScheme.onSurface
                 ),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -1202,7 +1203,8 @@ private fun NowPlayingCard(
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+            contentColor = MaterialTheme.colorScheme.onSurface
         )
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
@@ -1342,6 +1344,11 @@ private fun TrackCard(
                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.96f)
             } else {
                 MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+            },
+            contentColor = if (isActive) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurface
             }
         )
     ) {
