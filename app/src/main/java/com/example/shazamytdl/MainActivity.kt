@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
@@ -62,6 +63,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -160,6 +162,33 @@ private fun MainScreen(
     var isYoutubeSearchLoading by remember { mutableStateOf(false) }
     var youtubeSearchCompleted by remember { mutableStateOf(false) }
     var youtubeSearchError by remember { mutableStateOf<String?>(null) }
+    var isVoiceListening by remember { mutableStateOf(false) }
+
+    val voiceSearchController = remember(context) {
+        VoiceSearchController(
+            context = context,
+            onResult = { searchQuery = it },
+            onListeningChanged = { isVoiceListening = it },
+            onErrorMessage = { message = it }
+        )
+    }
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            voiceSearchController.startListening()
+        } else {
+            message = "Za glasovno iskanje dovoli uporabo mikrofona."
+        }
+    }
+
+    DisposableEffect(voiceSearchController) {
+        onDispose { voiceSearchController.destroy() }
+    }
+
+    LaunchedEffect(voiceSearchController) {
+        voiceSearchController.prepareLanguageModels()
+    }
 
     val visibleTracks = remember(tracks, searchQuery) {
         val query = searchQuery.normalizedForSearch()
@@ -420,14 +449,38 @@ private fun MainScreen(
             leadingIcon = {
                 Icon(Icons.Default.Search, contentDescription = null)
             },
-            trailingIcon = if (searchQuery.isNotEmpty()) {
-                {
-                    IconButton(onClick = { searchQuery = "" }) {
-                        Icon(Icons.Default.Close, contentDescription = "Počisti iskanje")
+            trailingIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = {
+                            if (isVoiceListening) {
+                                voiceSearchController.cancel()
+                            } else if (ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
+                                voiceSearchController.startListening()
+                            } else {
+                                microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    ) {
+                        Icon(
+                            if (isVoiceListening) Icons.Default.Stop else Icons.Default.Mic,
+                            contentDescription = if (isVoiceListening) {
+                                "Ustavi glasovno iskanje"
+                            } else {
+                                "Glasovno iskanje"
+                            }
+                        )
+                    }
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) {
+                            Icon(Icons.Default.Close, contentDescription = "Počisti iskanje")
+                        }
                     }
                 }
-            } else {
-                null
             },
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
