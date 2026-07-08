@@ -27,7 +27,12 @@ pomnilniku aplikacije.
 - prikaz in ročna zamenjava dejansko uporabljenega YouTube URL-ja,
 - samodejna lokalna naslovnica iz MusicBrainz/Cover Art Archive z YouTube
   thumbnailom kot rezervnim virom,
+- lokalna čakalna vrsta iz trenutno prikazanega seznama skladb,
+- naslednja/prejšnja skladba, naključno predvajanje in tri možnosti ponavljanja,
+- obnovitev čakalne vrste in položaja po ponovnem zagonu aplikacije,
 - lokalno predvajanje, pavza, ustavitev in premikanje po posnetku,
+- izbirni videzi **Sončni zahod**, **Ocean** in **Svetla**,
+- SunSea ikona ter kompaktna nadzorna plošča trenutno predvajane skladbe,
 - prikaz napredka ter podrobnosti napake,
 - čiščenje celotnega seznama in vseh prenesenih datotek po potrditvi uporabnika.
 
@@ -157,12 +162,17 @@ vidne drugim aplikacijam.
 
 ### Predvajanje
 
-Ko je prenos končan, so na kartici skladbe na voljo:
+Ko je prenos končan, dotik gumba za predvajanje sestavi čakalno vrsto iz vseh
+lokalnih skladb, ki so trenutno prikazane. Nadzorna plošča predvajalnika ponuja:
 
 - predvajanje in pavza,
 - ustavitev,
+- naslednjo in prejšnjo skladbo,
+- naključni vrstni red,
+- ponavljanje izklopljeno, celotne vrste ali ene skladbe,
 - drsnik za premik po posnetku,
-- trenutni in skupni čas posnetka.
+- trenutni in skupni čas posnetka,
+- prikaz položaja skladbe v čakalni vrsti.
 
 Predvajanje uporablja AndroidX Media3/ExoPlayer.
 
@@ -171,10 +181,16 @@ naslova poišče albumsko naslovnico v MusicBrainz/Cover Art Archive. Če varneg
 ujemanja ali slike ni, shrani thumbnail dejanskega YouTube videa. Naslovnica je
 prikazana na kartici skladbe in posredovana Media3 sistemskemu predvajalniku.
 
-Položaj predvajanja se za vsako skladbo hrani ločeno v pomnilniku. Pavza ali
-preklop na drugo skladbo drsnika ne ponastavita; ob ponovnem predvajanju se
-skladba nadaljuje z zadnjega položaja. Samo gumb **Ustavi** položaj aktivne
-skladbe izrecno ponastavi na začetek.
+Čakalna vrsta, aktivna skladba, položaj, naključno predvajanje in ponavljanje
+se shranijo. Po ponovnem zagonu aplikacija vrsto pripravi na zadnjem položaju,
+vendar predvajanja ne zažene brez uporabnikovega dejanja. Gumb **Ustavi**
+izprazni shranjeno čakalno vrsto.
+
+### Videz
+
+Gumb s paleto v glavi odpre izbiro ozadja in barvne sheme. Na voljo so
+**Sončni zahod**, **Ocean** in **Svetla**. Izbira se shrani in uporabi ob
+naslednjem zagonu.
 
 ### Čiščenje knjižnice
 

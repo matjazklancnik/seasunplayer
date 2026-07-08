@@ -5,7 +5,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -41,8 +40,14 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OfflinePin
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
@@ -50,6 +55,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
@@ -58,6 +64,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -69,6 +76,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -80,13 +88,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.media3.common.Player
 import com.example.shazamytdl.data.Track
 import com.example.shazamytdl.data.TrackRepository
 import com.example.shazamytdl.data.TrackStatus
@@ -96,7 +108,9 @@ import com.example.shazamytdl.download.YoutubeDlBridge
 import com.example.shazamytdl.download.YouTubeSearchResult
 import com.example.shazamytdl.importer.ShazamCsvImporter
 import com.example.shazamytdl.player.PlayerHolder
+import com.example.shazamytdl.ui.theme.AppVisualStyle
 import com.example.shazamytdl.ui.theme.ShazamYtdlTheme
+import com.example.shazamytdl.ui.theme.appBackgroundBrush
 import com.example.shazamytdl.util.stableTrackId
 import com.example.shazamytdl.youtube.YouTubeApiClient
 import com.example.shazamytdl.youtube.YouTubePlaylist
@@ -119,9 +133,28 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val playerHolder = (application as ShazamYtdlApp).playerHolder
         setContent {
-            ShazamYtdlTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    MainScreen(playerHolder = playerHolder)
+            val appearancePreferences = remember {
+                getSharedPreferences("appearance", Context.MODE_PRIVATE)
+            }
+            var visualStyle by remember {
+                mutableStateOf(
+                    AppVisualStyle.fromStorage(
+                        appearancePreferences.getString("visual_style", null)
+                    )
+                )
+            }
+            ShazamYtdlTheme(style = visualStyle) {
+                Surface(modifier = Modifier.fillMaxSize(), color = Color.Transparent) {
+                    MainScreen(
+                        playerHolder = playerHolder,
+                        visualStyle = visualStyle,
+                        onVisualStyleChange = { selected ->
+                            visualStyle = selected
+                            appearancePreferences.edit {
+                                putString("visual_style", selected.storageKey)
+                            }
+                        }
+                    )
                 }
             }
         }
@@ -132,7 +165,9 @@ class MainActivity : ComponentActivity() {
 private fun MainScreen(
     repository: TrackRepository = TrackRepository(LocalContext.current),
     importer: ShazamCsvImporter = ShazamCsvImporter(LocalContext.current),
-    playerHolder: PlayerHolder? = null
+    playerHolder: PlayerHolder? = null,
+    visualStyle: AppVisualStyle = AppVisualStyle.SUNSET,
+    onVisualStyleChange: (AppVisualStyle) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -148,6 +183,7 @@ private fun MainScreen(
     var trackToDelete by remember { mutableStateOf<Track?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var showAppearanceDialog by remember { mutableStateOf(false) }
     var isClearing by remember { mutableStateOf(false) }
     var isYouTubeLoading by remember { mutableStateOf(false) }
     var youtubeAccessToken by remember { mutableStateOf<String?>(null) }
@@ -158,6 +194,10 @@ private fun MainScreen(
     var isPlaying by remember { mutableStateOf(false) }
     var playerPositionMs by remember { mutableLongStateOf(0L) }
     var playerDurationMs by remember { mutableLongStateOf(0L) }
+    var playerQueueIndex by remember { mutableIntStateOf(0) }
+    var playerQueueSize by remember { mutableIntStateOf(0) }
+    var shuffleEnabled by remember { mutableStateOf(false) }
+    var repeatMode by remember { mutableIntStateOf(Player.REPEAT_MODE_OFF) }
     var youtubeSearchResults by remember { mutableStateOf(emptyList<YouTubeSearchResult>()) }
     var isYoutubeSearchLoading by remember { mutableStateOf(false) }
     var youtubeSearchCompleted by remember { mutableStateOf(false) }
@@ -237,6 +277,10 @@ private fun MainScreen(
                 isPlaying = holder.isPlaying
                 playerPositionMs = holder.currentPosition
                 playerDurationMs = holder.duration
+                playerQueueIndex = holder.queueIndex
+                playerQueueSize = holder.queueSize
+                shuffleEnabled = holder.shuffleEnabled
+                repeatMode = holder.repeatMode
             }
             delay(250)
         }
@@ -378,19 +422,65 @@ private fun MainScreen(
         }
     }
 
-    Column(
+    val currentTrack = remember(tracks, playingTrackId) {
+        tracks.firstOrNull { it.id == playingTrackId }
+    }
+    val playableTracks = remember(visibleTracks) {
+        visibleTracks.filter { it.localPath?.let(::File)?.isFile == true }
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .background(appBackgroundBrush(visualStyle))
     ) {
-        Text(
-            text = "SunSea Player",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(Modifier.height(6.dp))
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+            ElevatedCard(
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Image(
+                        painter = painterResource(R.drawable.sunsea_launcher),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(RoundedCornerShape(13.dp))
+                    )
+                    Spacer(Modifier.width(11.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "SunSea Player",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "${tracks.count { it.status == TrackStatus.DOWNLOADED }} lokalno · " +
+                                "${tracks.size} skladb",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = { showAppearanceDialog = true }) {
+                        Icon(Icons.Default.Palette, contentDescription = "Izberi videz")
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
 
-        Row(
+            Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -435,9 +525,9 @@ private fun MainScreen(
                     modifier = Modifier.size(19.dp)
                 )
             }
-        }
+            }
 
-        Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(8.dp))
 
         OutlinedTextField(
             value = searchQuery,
@@ -489,6 +579,37 @@ private fun MainScreen(
 
         Spacer(Modifier.height(8.dp))
 
+        currentTrack?.let { activeTrack ->
+            NowPlayingCard(
+                track = activeTrack,
+                isPlaying = isPlaying,
+                positionMs = playerPositionMs,
+                durationMs = playerDurationMs,
+                queueIndex = playerQueueIndex,
+                queueSize = playerQueueSize,
+                shuffleEnabled = shuffleEnabled,
+                repeatMode = repeatMode,
+                onPlayPause = {
+                    activeTrack.localPath?.let { path ->
+                        playerHolder?.togglePlayback(
+                            activeTrack.id,
+                            path,
+                            activeTrack.title,
+                            activeTrack.artist,
+                            activeTrack.artworkPath
+                        )
+                    }
+                },
+                onPrevious = { playerHolder?.skipToPrevious() },
+                onNext = { playerHolder?.skipToNext() },
+                onShuffle = { playerHolder?.toggleShuffle() },
+                onRepeat = { playerHolder?.cycleRepeatMode() },
+                onSeek = { playerHolder?.seekTo(it) },
+                onStop = { playerHolder?.stop() }
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+
         if (visibleTracks.isEmpty() && searchQuery.isNotBlank()) {
             YouTubeSearchSection(
                 query = searchQuery,
@@ -532,7 +653,11 @@ private fun MainScreen(
         } else if (tracks.isEmpty()) {
             EmptyState()
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 12.dp)
+            ) {
                 items(visibleTracks, key = { it.id }) { track ->
                     TrackCard(
                         track = track,
@@ -564,49 +689,17 @@ private fun MainScreen(
                             }
                         },
                         onPlay = {
-                            val path = track.localPath
-                            if (path.isNullOrBlank()) {
+                            if (track.localPath.isNullOrBlank()) {
                                 message = "Najprej prenesi ali poveži lokalno datoteko."
                             } else {
                                 runCatching {
-                                    playerHolder?.togglePlayback(
-                                        track.id,
-                                        path,
-                                        track.title,
-                                        track.artist,
-                                        track.artworkPath
-                                    )
+                                    playerHolder?.toggleQueuePlayback(playableTracks, track.id)
                                 }
                                     .onFailure { message = "Player napaka: ${it.message}" }
                             }
                         },
                         isActive = playingTrackId == track.id,
                         isPlaying = playingTrackId == track.id && isPlaying,
-                        playerPositionMs = if (playingTrackId == track.id) {
-                            playerPositionMs
-                        } else {
-                            playerHolder?.positionFor(track.id) ?: 0L
-                        },
-                        playerDurationMs = if (playingTrackId == track.id) playerDurationMs else 0L,
-                        onSeek = { positionMs ->
-                            val path = track.localPath
-                            if (!path.isNullOrBlank()) {
-                                runCatching {
-                                    if (playingTrackId != track.id) {
-                                        playerHolder?.playLocalFile(
-                                            track.id,
-                                            path,
-                                            track.title,
-                                            track.artist,
-                                            track.artworkPath
-                                        )
-                                        playerHolder?.pause()
-                                    }
-                                    playerHolder?.seekTo(positionMs)
-                                }.onFailure { message = "Player napaka: " + it.message }
-                            }
-                        },
-                        onStop = { playerHolder?.stop() },
                         onEditSource = { trackToEditSource = track },
                         onPromote = {
                             val promoted = DownloadQueueManager.promote(track.id)
@@ -624,6 +717,18 @@ private fun MainScreen(
                 }
             }
         }
+    }
+    }
+
+    if (showAppearanceDialog) {
+        AppearanceDialog(
+            selected = visualStyle,
+            onSelect = {
+                onVisualStyleChange(it)
+                showAppearanceDialog = false
+            },
+            onDismiss = { showAppearanceDialog = false }
+        )
     }
 
     errorToShow?.let { errorMsg ->
@@ -806,7 +911,7 @@ private fun MainScreen(
                     ),
                     onClick = {
                         trackToDelete = null
-                        if (playingTrackId == track.id) playerHolder?.stop()
+                        playerHolder?.removeTrack(track.id)
                         scope.launch(Dispatchers.IO) {
                             runCatching {
                                 check(DownloadQueueManager.removeQueued(track.id)) {
@@ -1014,6 +1119,196 @@ private fun YouTubeSearchSection(
 }
 
 @Composable
+private fun AppearanceDialog(
+    selected: AppVisualStyle,
+    onSelect: (AppVisualStyle) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Izberi videz") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                AppVisualStyle.entries.forEach { style ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(style) },
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (style == selected) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            }
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(appBackgroundBrush(style))
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(style.displayName, fontWeight = FontWeight.Bold)
+                                Text(
+                                    style.description,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            RadioButton(
+                                selected = style == selected,
+                                onClick = { onSelect(style) }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Zapri") }
+        }
+    )
+}
+
+@Composable
+private fun NowPlayingCard(
+    track: Track,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    queueIndex: Int,
+    queueSize: Int,
+    shuffleEnabled: Boolean,
+    repeatMode: Int,
+    onPlayPause: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onShuffle: () -> Unit,
+    onRepeat: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onStop: () -> Unit
+) {
+    var draggedPositionMs by remember(track.id) { mutableStateOf<Long?>(null) }
+    val shownPosition = draggedPositionMs ?: positionMs
+    val safeDuration = durationMs.coerceAtLeast(1L)
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TrackArtwork(track.artworkPath, size = 48)
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        track.title,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        track.artist,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (queueSize > 0) {
+                    Text(
+                        "${queueIndex + 1}/${queueSize}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            Slider(
+                value = shownPosition.coerceIn(0L, safeDuration).toFloat(),
+                onValueChange = { draggedPositionMs = it.toLong() },
+                onValueChangeFinished = {
+                    draggedPositionMs?.let(onSeek)
+                    draggedPositionMs = null
+                },
+                valueRange = 0f..safeDuration.toFloat(),
+                enabled = durationMs > 0,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(formatTime(shownPosition), style = MaterialTheme.typography.labelSmall)
+                Text(formatTime(durationMs), style = MaterialTheme.typography.labelSmall)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onShuffle) {
+                    Icon(
+                        Icons.Default.Shuffle,
+                        contentDescription = "Naključno predvajanje",
+                        tint = if (shuffleEnabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                IconButton(onClick = onPrevious) {
+                    Icon(Icons.Default.SkipPrevious, contentDescription = "Prejšnja")
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(50.dp)
+                ) {
+                    IconButton(onClick = onPlayPause) {
+                        Icon(
+                            if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Pavza" else "Predvajaj",
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
+                IconButton(onClick = onNext) {
+                    Icon(Icons.Default.SkipNext, contentDescription = "Naslednja")
+                }
+                IconButton(onClick = onRepeat) {
+                    Icon(
+                        if (repeatMode == Player.REPEAT_MODE_ONE) {
+                            Icons.Default.RepeatOne
+                        } else {
+                            Icons.Default.Repeat
+                        },
+                        contentDescription = "Ponavljanje",
+                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                IconButton(onClick = onStop) {
+                    Icon(Icons.Default.Stop, contentDescription = "Ustavi")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun EmptyState() {
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -1033,39 +1328,24 @@ private fun TrackCard(
     onPlay: () -> Unit,
     isActive: Boolean,
     isPlaying: Boolean,
-    playerPositionMs: Long,
-    playerDurationMs: Long,
-    onSeek: (Long) -> Unit,
-    onStop: () -> Unit,
     onEditSource: () -> Unit,
     onPromote: () -> Unit,
     onDelete: () -> Unit,
     onShowError: (String) -> Unit
 ) {
-    var fileDurationMs by remember(track.localPath) { mutableLongStateOf(0L) }
-    var draggedPositionMs by remember(track.id) { mutableStateOf<Long?>(null) }
-
-    LaunchedEffect(track.localPath) {
-        fileDurationMs = withContext(Dispatchers.IO) {
-            val path = track.localPath ?: return@withContext 0L
-            runCatching {
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(path)
-                    retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                } finally {
-                    retriever.release()
-                }
-            }.getOrDefault(0L)
-        }
-    }
-
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .then(if (onSelect != null) Modifier.clickable(onClick = onSelect) else Modifier)
+            .then(if (onSelect != null) Modifier.clickable(onClick = onSelect) else Modifier),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isActive) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.96f)
+            } else {
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+            }
+        )
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(modifier = Modifier.padding(12.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1092,8 +1372,8 @@ private fun TrackCard(
                 if (!track.localPath.isNullOrBlank()) {
                     IconButton(onClick = onPlay) {
                         Icon(
-                            imageVector = Icons.Default.PlayArrow,
-                            contentDescription = "Play",
+                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Pavza" else "Predvajaj",
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
@@ -1133,43 +1413,6 @@ private fun TrackCard(
                         Text("Podrobnosti", fontSize = 11.sp)
                     }
                 }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            if (!track.localPath.isNullOrBlank()) {
-                val durationMs = if (isActive && playerDurationMs > 0) playerDurationMs else fileDurationMs
-                val positionMs = draggedPositionMs ?: playerPositionMs
-                Slider(
-                    value = positionMs.coerceIn(0L, durationMs.coerceAtLeast(1L)).toFloat(),
-                    onValueChange = { draggedPositionMs = it.toLong() },
-                    onValueChangeFinished = {
-                        draggedPositionMs?.let(onSeek)
-                        draggedPositionMs = null
-                    },
-                    valueRange = 0f..durationMs.coerceAtLeast(1L).toFloat(),
-                    enabled = durationMs > 0,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(formatTime(positionMs) + " / " + formatTime(durationMs), style = MaterialTheme.typography.bodySmall)
-                    Row {
-                        IconButton(onClick = onPlay) {
-                            Icon(
-                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                contentDescription = if (isPlaying) "Pavza" else "Predvajaj"
-                            )
-                        }
-                        IconButton(onClick = onStop, enabled = isActive) {
-                            Icon(Icons.Default.Stop, contentDescription = "Ustavi")
-                        }
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
             }
 
             Row(
@@ -1242,7 +1485,7 @@ private fun String.normalizedForSearch(): String = Normalizer
     .lowercase(Locale.ROOT)
 
 @Composable
-private fun TrackArtwork(path: String?) {
+private fun TrackArtwork(path: String?, size: Int = 56) {
     var image by remember(path) { mutableStateOf<ImageBitmap?>(null) }
 
     LaunchedEffect(path) {
@@ -1256,7 +1499,7 @@ private fun TrackArtwork(path: String?) {
 
     Box(
         modifier = Modifier
-            .size(56.dp)
+            .size(size.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
