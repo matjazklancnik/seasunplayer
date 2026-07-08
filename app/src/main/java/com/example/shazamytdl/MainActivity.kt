@@ -144,7 +144,11 @@ class MainActivity : ComponentActivity() {
                 )
             }
             ShazamYtdlTheme(style = visualStyle) {
-                Surface(modifier = Modifier.fillMaxSize(), color = Color.Transparent) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onBackground
+                ) {
                     MainScreen(
                         playerHolder = playerHolder,
                         visualStyle = visualStyle,
