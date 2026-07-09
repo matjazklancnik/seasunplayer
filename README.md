@@ -16,6 +16,8 @@ pomnilniku aplikacije.
 - ročno dodajanje izvajalca in naslova,
 - lokalna SQLite zbirka skladb in stanj prenosa,
 - rezervno iskanje javnih YouTube zadetkov, kadar lokalno iskanje nima zadetkov,
+- slušno prepoznavanje skladbe prek uporabniško nastavljenega HTTPS endpointa
+  in prikaz YouTube rezultatov za prenos,
 - zaporedna čakalna vrsta za prenose,
 - premik poljubne čakajoče skladbe na naslednje mesto z gumbom **Naslednja**,
 - en samodejni ponovni poskus neuspelega prenosa na koncu vrste,
@@ -85,6 +87,30 @@ lokalnega zadetka, aplikacija po kratkem zamiku prek obstoječega yt-dlp prikaž
 do pet javnih YouTube zadetkov. To iskanje ne potrebuje prijave ali API ključa.
 Gumb **Prenesi** izbrani zadetek doda v lokalno knjižnico z neposrednim YouTube
 URL-jem in ga uvrsti v čakalno vrsto.
+
+### Slušno prepoznavanje
+
+Ikona ušesa v iskalnem polju posname približno 10 sekund zvoka, pošlje vzorec
+na nastavljen HTTPS prepoznavni endpoint in iz rezultata nastavi iskanje po
+izvajalcu ter naslovu. YouTube rezultati se prikažejo takoj pod iskalnim poljem
+in jih je mogoče dodati v čakalno vrsto z gumbom **Prenesi**.
+
+Aplikacija ne vgrajuje Shazam ali ACRCloud skrivnosti v APK. Endpoint naj bo
+lasten proxy oziroma backend, ki hrani ključe ponudnika prepoznavanja. Aplikacija
+pošlje `multipart/form-data` POST z deli:
+
+- `sample`: M4A/AAC zvočni vzorec,
+- `sample_bytes`: velikost vzorca v bajtih,
+- `data_type`: `audio`.
+
+Sprejet je preprost JSON:
+
+```json
+{ "artist": "Adele", "title": "Hello", "youtubeVideoId": "YQHsXMglC9A" }
+```
+
+Sprejet je tudi ACRCloud-compatible odgovor z `metadata.music[0].artists`,
+`metadata.music[0].title` in neobveznim `external_metadata.youtube.vid`.
 
 ### Zasebni YouTube seznami
 
@@ -266,6 +292,8 @@ Osnovni paket aplikacije je `com.example.shazamytdl`.
 
 ## Omejitve
 
+- slušno prepoznavanje potrebuje nastavljen zunanji HTTPS endpoint oziroma
+  proxy za ponudnika prepoznavanja zvoka,
 - YouTube API zahteva pravilno nastavljen Google Cloud projekt, Android OAuth
   klient ter ustrezen SHA-1 podpis aplikacije,
 - aplikacije z zunanjimi uporabniki lahko pred objavo zahtevajo Googlov postopek

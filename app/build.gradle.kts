@@ -94,4 +94,5 @@ dependencies {
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:$ytdlVersion")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
 }

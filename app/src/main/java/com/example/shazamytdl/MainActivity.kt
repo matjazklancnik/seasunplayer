@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OfflinePin
 import androidx.compose.material.icons.filled.Palette
@@ -108,6 +109,10 @@ import com.example.shazamytdl.download.YoutubeDlBridge
 import com.example.shazamytdl.download.YouTubeSearchResult
 import com.example.shazamytdl.importer.ShazamCsvImporter
 import com.example.shazamytdl.player.PlayerHolder
+import com.example.shazamytdl.recognition.AudioSampleRecorder
+import com.example.shazamytdl.recognition.SongRecognitionClient
+import com.example.shazamytdl.recognition.SongRecognitionResult
+import com.example.shazamytdl.recognition.SongRecognitionSettings
 import com.example.shazamytdl.ui.theme.AppVisualStyle
 import com.example.shazamytdl.ui.theme.ShazamYtdlTheme
 import com.example.shazamytdl.ui.theme.appBackgroundBrush
@@ -122,6 +127,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -207,6 +213,17 @@ private fun MainScreen(
     var youtubeSearchCompleted by remember { mutableStateOf(false) }
     var youtubeSearchError by remember { mutableStateOf<String?>(null) }
     var isVoiceListening by remember { mutableStateOf(false) }
+    var isSongListening by remember { mutableStateOf(false) }
+    var songRecognitionEndpoint by remember {
+        mutableStateOf(SongRecognitionSettings.endpoint(context).orEmpty())
+    }
+    var showSongRecognitionSettings by remember { mutableStateOf(false) }
+    var songRecognitionJob by remember { mutableStateOf<Job?>(null) }
+    var songRecognitionResult by remember { mutableStateOf<SongRecognitionResult?>(null) }
+    var songRecognitionSearchResults by remember { mutableStateOf(emptyList<YouTubeSearchResult>()) }
+    var isSongRecognitionSearchLoading by remember { mutableStateOf(false) }
+    var songRecognitionSearchCompleted by remember { mutableStateOf(false) }
+    var songRecognitionSearchError by remember { mutableStateOf<String?>(null) }
 
     val voiceSearchController = remember(context) {
         VoiceSearchController(
@@ -223,6 +240,61 @@ private fun MainScreen(
             voiceSearchController.startListening()
         } else {
             message = "Za glasovno iskanje dovoli uporabo mikrofona."
+        }
+    }
+
+    fun clearSongRecognition() {
+        songRecognitionResult = null
+        songRecognitionSearchResults = emptyList()
+        songRecognitionSearchError = null
+        songRecognitionSearchCompleted = false
+        isSongRecognitionSearchLoading = false
+    }
+
+    fun startSongRecognition() {
+        val endpoint = SongRecognitionSettings.normalizedEndpoint(songRecognitionEndpoint)
+        if (endpoint == null) {
+            showSongRecognitionSettings = true
+            message = "Za slušno prepoznavanje nastavi HTTPS endpoint."
+            return
+        }
+        if (isSongListening) return
+
+        voiceSearchController.cancel()
+        songRecognitionJob?.cancel()
+        songRecognitionJob = scope.launch {
+            var sample: File? = null
+            try {
+                isSongListening = true
+                clearSongRecognition()
+                message = "Poslušam skladbo..."
+                val recordedSample = AudioSampleRecorder.record(context)
+                sample = recordedSample
+                val recognized = withContext(Dispatchers.IO) {
+                    SongRecognitionClient.recognize(endpoint, recordedSample)
+                }
+                songRecognitionResult = recognized
+                searchQuery = recognized.searchQuery
+                message = "Prepoznano: ${recognized.artist} - ${recognized.title}"
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                message = "Prepoznavanje ni uspelo: ${error.message ?: error}"
+            } finally {
+                sample?.delete()
+                isSongListening = false
+                songRecognitionJob = null
+            }
+        }
+    }
+
+    val songRecognitionPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startSongRecognition()
+        } else {
+            message = "Za slušno prepoznavanje dovoli uporabo mikrofona."
         }
     }
 
@@ -271,6 +343,45 @@ private fun MainScreen(
             youtubeSearchCompleted = true
         } finally {
             isYoutubeSearchLoading = false
+        }
+    }
+
+    LaunchedEffect(songRecognitionResult) {
+        val recognized = songRecognitionResult
+        songRecognitionSearchResults = emptyList()
+        songRecognitionSearchError = null
+        songRecognitionSearchCompleted = false
+        if (recognized == null) {
+            isSongRecognitionSearchLoading = false
+            return@LaunchedEffect
+        }
+
+        val directResult = recognized.youtubeVideoId?.let { videoId ->
+            YouTubeSearchResult(
+                videoId = videoId,
+                title = recognized.title,
+                channel = recognized.artist,
+                url = "https://www.youtube.com/watch?v=$videoId",
+                durationSeconds = null
+            )
+        }
+
+        isSongRecognitionSearchLoading = true
+        try {
+            val results = withContext(Dispatchers.IO) {
+                YoutubeDlBridge.searchYouTube(context, recognized.searchQuery)
+            }
+            songRecognitionSearchResults = (listOfNotNull(directResult) + results)
+                .distinctBy { it.videoId }
+                .take(5)
+            songRecognitionSearchCompleted = true
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            songRecognitionSearchError = error.message ?: error.toString()
+            songRecognitionSearchCompleted = true
+        } finally {
+            isSongRecognitionSearchLoading = false
         }
     }
 
@@ -433,6 +544,46 @@ private fun MainScreen(
         visibleTracks.filter { it.localPath?.let(::File)?.isFile == true }
     }
 
+    fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    fun enqueueYouTubeResult(
+        result: YouTubeSearchResult,
+        clearTextSearch: Boolean,
+        clearRecognizedSong: Boolean
+    ) {
+        requestNotificationPermissionIfNeeded()
+        val track = Track(
+            id = stableTrackId(result.title, result.channel),
+            title = result.title,
+            artist = result.channel,
+            sourceUrl = result.url,
+            status = TrackStatus.URL_SET
+        )
+        scope.launch(Dispatchers.IO) {
+            repository.upsert(track)
+            val added = DownloadQueueManager.enqueue(track.id)
+            withContext(Dispatchers.Main) {
+                refreshTracks()
+                if (clearTextSearch) searchQuery = ""
+                if (clearRecognizedSong) clearSongRecognition()
+                message = if (added) {
+                    "YouTube skladba je dodana v čakalno vrsto."
+                } else {
+                    "Skladba je že v čakalni vrsti."
+                }
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -548,6 +699,37 @@ private fun MainScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         onClick = {
+                            if (isSongListening) {
+                                songRecognitionJob?.cancel()
+                            } else if (SongRecognitionSettings.normalizedEndpoint(songRecognitionEndpoint) == null) {
+                                showSongRecognitionSettings = true
+                            } else if (ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
+                                startSongRecognition()
+                            } else {
+                                songRecognitionPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    ) {
+                        Icon(
+                            if (isSongListening) Icons.Default.Stop else Icons.Default.Hearing,
+                            contentDescription = if (isSongListening) {
+                                "Ustavi slušno prepoznavanje"
+                            } else {
+                                "Slušno prepoznavanje pesmi"
+                            },
+                            tint = if (isSongListening) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                Color.Unspecified
+                            }
+                        )
+                    }
+                    IconButton(
+                        onClick = {
                             if (isVoiceListening) {
                                 voiceSearchController.cancel()
                             } else if (ContextCompat.checkSelfPermission(
@@ -555,6 +737,7 @@ private fun MainScreen(
                                     Manifest.permission.RECORD_AUDIO
                                 ) == PackageManager.PERMISSION_GRANTED
                             ) {
+                                songRecognitionJob?.cancel()
                                 voiceSearchController.startListening()
                             } else {
                                 microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -583,6 +766,26 @@ private fun MainScreen(
         )
 
         Spacer(Modifier.height(8.dp))
+
+        songRecognitionResult?.let { recognized ->
+            YouTubeSearchSection(
+                query = recognized.searchQuery,
+                results = songRecognitionSearchResults,
+                isLoading = isSongRecognitionSearchLoading,
+                searchCompleted = songRecognitionSearchCompleted,
+                error = songRecognitionSearchError,
+                headerText = "Prepoznano: ${recognized.artist} - ${recognized.title}",
+                onDismiss = { clearSongRecognition() },
+                onDownload = { result ->
+                    enqueueYouTubeResult(
+                        result = result,
+                        clearTextSearch = true,
+                        clearRecognizedSong = true
+                    )
+                }
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         currentTrack?.let { activeTrack ->
             NowPlayingCard(
@@ -615,7 +818,7 @@ private fun MainScreen(
             Spacer(Modifier.height(8.dp))
         }
 
-        if (visibleTracks.isEmpty() && searchQuery.isNotBlank()) {
+        if (songRecognitionResult == null && visibleTracks.isEmpty() && searchQuery.isNotBlank()) {
             YouTubeSearchSection(
                 query = searchQuery,
                 results = youtubeSearchResults,
@@ -623,36 +826,11 @@ private fun MainScreen(
                 searchCompleted = youtubeSearchCompleted,
                 error = youtubeSearchError,
                 onDownload = { result ->
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                        ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.POST_NOTIFICATIONS
-                        ) != PackageManager.PERMISSION_GRANTED
-                    ) {
-                        notificationPermissionLauncher.launch(
-                            Manifest.permission.POST_NOTIFICATIONS
-                        )
-                    }
-                    val track = Track(
-                        id = stableTrackId(result.title, result.channel),
-                        title = result.title,
-                        artist = result.channel,
-                        sourceUrl = result.url,
-                        status = TrackStatus.URL_SET
+                    enqueueYouTubeResult(
+                        result = result,
+                        clearTextSearch = true,
+                        clearRecognizedSong = false
                     )
-                    scope.launch(Dispatchers.IO) {
-                        repository.upsert(track)
-                        val added = DownloadQueueManager.enqueue(track.id)
-                        withContext(Dispatchers.Main) {
-                            refreshTracks()
-                            searchQuery = ""
-                            message = if (added) {
-                                "YouTube skladba je dodana v čakalno vrsto."
-                            } else {
-                                "Skladba je že v čakalni vrsti."
-                            }
-                        }
-                    }
                 }
             )
         } else if (tracks.isEmpty()) {
@@ -733,6 +911,19 @@ private fun MainScreen(
                 showAppearanceDialog = false
             },
             onDismiss = { showAppearanceDialog = false }
+        )
+    }
+
+    if (showSongRecognitionSettings) {
+        RecognitionEndpointDialog(
+            endpoint = songRecognitionEndpoint,
+            onSave = { endpoint ->
+                SongRecognitionSettings.saveEndpoint(context, endpoint)
+                songRecognitionEndpoint = endpoint
+                showSongRecognitionSettings = false
+                message = "Endpoint za prepoznavanje je shranjen."
+            },
+            onDismiss = { showSongRecognitionSettings = false }
         )
     }
 
@@ -1053,14 +1244,30 @@ private fun YouTubeSearchSection(
     isLoading: Boolean,
     searchCompleted: Boolean,
     error: String?,
+    headerText: String = "Ni lokalnih zadetkov · rezultati YouTube",
+    onDismiss: (() -> Unit)? = null,
     onDownload: (YouTubeSearchResult) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            text = "Ni lokalnih zadetkov · rezultati YouTube",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = headerText,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(34.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Zapri prepoznano skladbo")
+                }
+            }
+        }
         when {
             query.trim().length < 2 -> Text(
                 "Za iskanje na YouTubu vnesi vsaj 2 znaka.",
@@ -1121,6 +1328,50 @@ private fun YouTubeSearchSection(
             }
         }
     }
+}
+
+@Composable
+private fun RecognitionEndpointDialog(
+    endpoint: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var value by remember(endpoint) { mutableStateOf(endpoint) }
+    val normalized = SongRecognitionSettings.normalizedEndpoint(value)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Slušno prepoznavanje") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    label = { Text("Recognition endpoint") },
+                    placeholder = { Text("https://example.com/recognize") },
+                    singleLine = true,
+                    isError = value.isNotBlank() && normalized == null,
+                    supportingText = if (value.isNotBlank() && normalized == null) {
+                        { Text("Uporabi veljaven HTTPS URL.") }
+                    } else {
+                        null
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = normalized != null,
+                onClick = { normalized?.let(onSave) }
+            ) {
+                Text("Shrani")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Prekliči") }
+        }
+    )
 }
 
 @Composable

@@ -1,5 +1,6 @@
 package com.example.shazamytdl.player
 
+import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
@@ -33,6 +34,16 @@ class PlaybackService : MediaSessionService() {
         mediaSession
     } else {
         null
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        mediaSession?.player?.run {
+            pause()
+            stop()
+            clearMediaItems()
+        }
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
