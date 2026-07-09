@@ -96,8 +96,17 @@ izvajalcu ter naslovu. YouTube rezultati se prikažejo takoj pod iskalnim poljem
 in jih je mogoče dodati v čakalno vrsto z gumbom **Prenesi**.
 
 Aplikacija ne vgrajuje Shazam ali ACRCloud skrivnosti v APK. Endpoint naj bo
-lasten proxy oziroma backend, ki hrani ključe ponudnika prepoznavanja. Aplikacija
-pošlje `multipart/form-data` POST z deli:
+lasten proxy oziroma backend, ki hrani ključe ponudnika prepoznavanja. Da
+končnemu uporabniku na telefonu ni treba nastavljati ničesar, lahko razvijalec
+pred gradnjo APK-ja v `local.properties` nastavi:
+
+```properties
+recognition.endpoint=https://tvoja-domena.example/recognize
+```
+
+`recognition.endpoint` ni skrivnost; skrivnosti ponudnika ostanejo samo na
+backendu. Če vrednost ni nastavljena, aplikacija ob prvem kliku ikone ušesa
+ponudi ročni vnos endpointa. Aplikacija pošlje `multipart/form-data` POST z deli:
 
 - `sample`: M4A/AAC zvočni vzorec,
 - `sample_bytes`: velikost vzorca v bajtih,

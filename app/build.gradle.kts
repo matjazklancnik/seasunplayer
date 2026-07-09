@@ -1,7 +1,24 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.isFile) {
+        file.inputStream().use(::load)
+    }
+}
+
+fun configValue(name: String): String =
+    providers.gradleProperty(name)
+        .orElse(localProperties.getProperty(name, ""))
+        .get()
+
+fun quotedConfigValue(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "com.example.shazamytdl"
@@ -13,6 +30,12 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
+
+        buildConfigField(
+            "String",
+            "DEFAULT_RECOGNITION_ENDPOINT",
+            quotedConfigValue(configValue("recognition.endpoint"))
+        )
     }
 
     buildTypes {
@@ -34,6 +57,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {

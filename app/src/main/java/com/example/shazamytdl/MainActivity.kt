@@ -214,8 +214,14 @@ private fun MainScreen(
     var youtubeSearchError by remember { mutableStateOf<String?>(null) }
     var isVoiceListening by remember { mutableStateOf(false) }
     var isSongListening by remember { mutableStateOf(false) }
+    val defaultSongRecognitionEndpoint = remember {
+        BuildConfig.DEFAULT_RECOGNITION_ENDPOINT.trim()
+    }
     var songRecognitionEndpoint by remember {
-        mutableStateOf(SongRecognitionSettings.endpoint(context).orEmpty())
+        mutableStateOf(
+            SongRecognitionSettings.endpoint(context)
+                ?: defaultSongRecognitionEndpoint
+        )
     }
     var showSongRecognitionSettings by remember { mutableStateOf(false) }
     var songRecognitionJob by remember { mutableStateOf<Job?>(null) }
