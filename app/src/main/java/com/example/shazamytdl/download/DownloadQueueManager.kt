@@ -42,7 +42,9 @@ object DownloadQueueManager {
 
     private data class DownloadCandidate(
         val url: String,
-        val label: String
+        val label: String,
+        val title: String? = null,
+        val channel: String? = null
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -411,26 +413,65 @@ object DownloadQueueManager {
 
     private fun downloadCandidates(track: Track): List<DownloadCandidate> {
         val originalUrl = track.sourceUrl?.trim()?.takeIf { it.isYouTubeUrl() }
-        val query = "${track.artist} - ${track.title}"
+        val query = YouTubeCandidateMatcher.fallbackSearchQuery(
+            trackTitle = track.title,
+            trackArtist = track.artist,
+            hasDirectSource = originalUrl != null
+        )
         val results = runCatching {
-            YoutubeDlBridge.searchYouTube(appContext, query, AUTO_SEARCH_CANDIDATE_COUNT)
+            YoutubeDlBridge.searchYouTube(appContext, query, SEARCH_CANDIDATE_POOL_SIZE)
         }.onFailure { error ->
             Log.w("DownloadQueue", "Could not prefetch YouTube candidates for $query", error)
         }.getOrDefault(emptyList())
 
-        val urls = buildList {
-            originalUrl?.let { add(it) }
-            results
-                .map { it.url }
-                .filter { it.isYouTubeUrl() }
-                .forEach(::add)
+        val matchingResults = results.filter { result ->
+            result.url.isYouTubeUrl() && YouTubeCandidateMatcher.matchesTrack(
+                trackTitle = track.title,
+                trackArtist = track.artist,
+                candidateTitle = result.title,
+                candidateChannel = result.channel
+            )
         }
-            .distinctBy { it.normalizedYouTubeUrlKey() }
-            .take(AUTO_SEARCH_CANDIDATE_COUNT)
+        if (results.isNotEmpty() && matchingResults.isEmpty()) {
+            Log.w("DownloadQueue", "No title-matching fallback candidates for $query")
+        }
 
-        val fallbackUrls = urls.ifEmpty { listOf("ytsearch1:$query") }
-        return fallbackUrls.mapIndexed { index, url ->
-            DownloadCandidate(url = url, label = "${index + 1}/${fallbackUrls.size}")
+        val searchCandidates = if (matchingResults.isNotEmpty() || originalUrl != null) {
+            matchingResults
+        } else {
+            results.filter { it.url.isYouTubeUrl() }
+        }
+
+        val candidates = buildList {
+            originalUrl?.let {
+                add(
+                    DownloadCandidate(
+                        url = it,
+                        label = "selected",
+                        title = track.title,
+                        channel = track.artist
+                    )
+                )
+            }
+            searchCandidates.forEach { result ->
+                add(
+                    DownloadCandidate(
+                        url = result.url,
+                        label = "search",
+                        title = result.title,
+                        channel = result.channel
+                    )
+                )
+            }
+        }
+            .distinctBy { it.url.normalizedYouTubeUrlKey() }
+            .take(AUTO_DOWNLOAD_CANDIDATE_COUNT)
+
+        val fallbackCandidates = candidates.ifEmpty {
+            listOf(DownloadCandidate(url = "ytsearch1:$query", label = "search"))
+        }
+        return fallbackCandidates.mapIndexed { index, candidate ->
+            candidate.copy(label = "${index + 1}/${fallbackCandidates.size}")
         }
     }
 
@@ -442,5 +483,6 @@ object DownloadQueueManager {
         return videoId ?: this.substringBefore('&').substringBefore("&list=")
     }
 
-    private const val AUTO_SEARCH_CANDIDATE_COUNT = 3
+    private const val SEARCH_CANDIDATE_POOL_SIZE = 6
+    private const val AUTO_DOWNLOAD_CANDIDATE_COUNT = 3
 }
