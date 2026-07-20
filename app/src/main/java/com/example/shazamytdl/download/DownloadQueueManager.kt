@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.example.shazamytdl.data.Track
 import com.example.shazamytdl.data.TrackRepository
 import com.example.shazamytdl.data.TrackStatus
 import kotlinx.coroutines.CoroutineScope
@@ -37,6 +38,11 @@ object DownloadQueueManager {
         val trackId: String,
         val generation: Long,
         val attempt: Int = 0
+    )
+
+    private data class DownloadCandidate(
+        val url: String,
+        val label: String
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -242,34 +248,18 @@ object DownloadQueueManager {
             if (entry.generation != libraryGeneration) return
             cancelToken.throwIfCancelled()
             val track = repository.getById(trackId) ?: return
-            val originalUrl = track.sourceUrl
-            val downloadUrl = if (!originalUrl.isNullOrBlank() &&
-                (originalUrl.contains("youtube.com") || originalUrl.contains("youtu.be"))
-            ) {
-                originalUrl
-            } else {
-                "ytsearch1:${track.artist} - ${track.title}"
-            }
-
             repository.updateStatus(trackId, TrackStatus.DOWNLOADING)
             _progress.update { it + (trackId to "Priprava prenosa...") }
             _events.tryEmit(DownloadQueueEvent.StatusChanged(trackId))
 
             val trackOutputDir = File(File(appContext.filesDir, "music"), track.id)
             outDir = trackOutputDir
-            val downloaded = YoutubeDlBridge.downloadAllowedUrl(
-                context = appContext,
-                url = downloadUrl,
+            val downloaded = downloadWithQualityFallback(
+                track = track,
                 outputDir = trackOutputDir,
-                subPath = "audio",
+                entry = entry,
                 cancelToken = cancelToken
-            ) { progress, eta ->
-                if (entry.generation == libraryGeneration && !cancelToken.isCancelled) {
-                    _progress.update {
-                        it + (trackId to "Prenašanje: ${progress.toInt()}% · ETA ${eta}s")
-                    }
-                }
-            }
+            )
 
             cancelToken.throwIfCancelled()
             if (entry.generation != libraryGeneration || repository.getById(trackId) == null) {
@@ -351,4 +341,100 @@ object DownloadQueueManager {
             }
         }
     }
+
+    private fun downloadWithQualityFallback(
+        track: Track,
+        outputDir: File,
+        entry: QueueEntry,
+        cancelToken: DownloadCancelToken
+    ): DownloadedMedia {
+        val candidates = downloadCandidates(track)
+        var lastQuietReport: AudioLoudnessReport? = null
+
+        candidates.forEachIndexed { index, candidate ->
+            cancelToken.throwIfCancelled()
+            if (outputDir.exists()) {
+                check(outputDir.deleteRecursively()) {
+                    "Prejšnjega poskusa prenosa ni bilo mogoče počistiti."
+                }
+            }
+            check(outputDir.mkdirs() || outputDir.isDirectory) {
+                "Could not create output directory: ${outputDir.absolutePath}"
+            }
+
+            _progress.update {
+                it + (track.id to "Prenašanje zadetka ${candidate.label}...")
+            }
+            val downloaded = YoutubeDlBridge.downloadAllowedUrl(
+                context = appContext,
+                url = candidate.url,
+                outputDir = outputDir,
+                subPath = "audio",
+                cancelToken = cancelToken
+            ) { progress, eta ->
+                if (entry.generation == libraryGeneration && !cancelToken.isCancelled) {
+                    _progress.update {
+                        it + (track.id to "Zadetek ${candidate.label}: ${progress.toInt()}% · ETA ${eta}s")
+                    }
+                }
+            }
+
+            cancelToken.throwIfCancelled()
+            val loudness = AudioQualityAnalyzer.analyze(downloaded.file, cancelToken)
+            if (loudness != null) {
+                Log.d(
+                    "DownloadQueue",
+                    "Audio loudness for ${downloaded.sourceUrl}: " +
+                        "rms=${loudness.rmsDb}, active=${loudness.activeRmsDb}, peak=${loudness.peakDb}"
+                )
+            }
+            if (loudness != null &&
+                AudioQualityAnalyzer.isTooQuiet(loudness) &&
+                index < candidates.lastIndex
+            ) {
+                lastQuietReport = loudness
+                _progress.update {
+                    it + (track.id to "Zadetek ${candidate.label} je pretih · poskušam naslednjega")
+                }
+                outputDir.deleteRecursively()
+                return@forEachIndexed
+            }
+
+            if (lastQuietReport != null) {
+                _progress.update { it + (track.id to "Najden glasnejši zadetek.") }
+            }
+            return downloaded
+        }
+
+        error("Prenos se je končal brez veljavnega zvočnega kandidata.")
+    }
+
+    private fun downloadCandidates(track: Track): List<DownloadCandidate> {
+        val originalUrl = track.sourceUrl?.trim()
+        if (!originalUrl.isNullOrBlank() && originalUrl.isYouTubeUrl()) {
+            return listOf(DownloadCandidate(originalUrl, "1/1"))
+        }
+
+        val query = "${track.artist} - ${track.title}"
+        val results = runCatching {
+            YoutubeDlBridge.searchYouTube(appContext, query, AUTO_SEARCH_CANDIDATE_COUNT)
+        }.onFailure { error ->
+            Log.w("DownloadQueue", "Could not prefetch YouTube candidates for $query", error)
+        }.getOrDefault(emptyList())
+
+        val urls = results
+            .map { it.url }
+            .filter { it.isYouTubeUrl() }
+            .distinct()
+            .take(AUTO_SEARCH_CANDIDATE_COUNT)
+
+        val fallbackUrls = urls.ifEmpty { listOf("ytsearch1:$query") }
+        return fallbackUrls.mapIndexed { index, url ->
+            DownloadCandidate(url = url, label = "${index + 1}/${fallbackUrls.size}")
+        }
+    }
+
+    private fun String.isYouTubeUrl(): Boolean = contains("youtube.com") || contains("youtu.be")
+
+    private const val AUTO_SEARCH_CANDIDATE_COUNT = 3
 }
