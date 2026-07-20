@@ -779,7 +779,7 @@ private fun MainScreen(
                             tint = if (isSongListening) {
                                 MaterialTheme.colorScheme.primary
                             } else {
-                                Color.Unspecified
+                                MaterialTheme.colorScheme.onSurfaceVariant
                             }
                         )
                     }
