@@ -9,6 +9,7 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 import java.util.UUID
 
 class SongRecognitionException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -24,15 +25,29 @@ data class SongRecognitionResult(
 }
 
 object SongRecognitionSettings {
+    const val DEFAULT_AUDD_API_TOKEN = "test"
+
     fun endpoint(context: Context): String? = context
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .getString(KEY_ENDPOINT, null)
         ?.trim()
         ?.takeIf { it.isNotBlank() }
 
+    fun auddApiToken(context: Context): String? = context
+        .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_AUDD_API_TOKEN, null)
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+
     fun saveEndpoint(context: Context, endpoint: String) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
             putString(KEY_ENDPOINT, endpoint.trim())
+        }
+    }
+
+    fun saveAudDApiToken(context: Context, apiToken: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit {
+            putString(KEY_AUDD_API_TOKEN, apiToken.trim())
         }
     }
 
@@ -48,13 +63,39 @@ object SongRecognitionSettings {
 
     private const val PREFS_NAME = "song_recognition"
     private const val KEY_ENDPOINT = "endpoint_url"
+    private const val KEY_AUDD_API_TOKEN = "audd_api_token"
 }
 
 object SongRecognitionClient {
+    fun recognize(
+        sample: File,
+        auddApiToken: String = SongRecognitionSettings.DEFAULT_AUDD_API_TOKEN
+    ): SongRecognitionResult {
+        val token = auddApiToken.trim().ifBlank { SongRecognitionSettings.DEFAULT_AUDD_API_TOKEN }
+        val body = postSample(
+            endpointUrl = AUDD_ENDPOINT,
+            sample = sample,
+            fileFieldName = "file",
+            textParts = listOf(
+                "api_token" to token,
+                "return" to "apple_music,spotify"
+            )
+        )
+        return parseResponse(body)
+    }
+
     fun recognize(endpointUrl: String, sample: File): SongRecognitionResult {
         val endpoint = SongRecognitionSettings.normalizedEndpoint(endpointUrl)
             ?: throw SongRecognitionException("Vnesi veljaven HTTPS prepoznavni endpoint.")
-        val body = postSample(endpoint, sample)
+        val body = postSample(
+            endpointUrl = endpoint,
+            sample = sample,
+            fileFieldName = "sample",
+            textParts = listOf(
+                "sample_bytes" to sample.length().toString(),
+                "data_type" to "audio"
+            )
+        )
         return parseResponse(body)
     }
 
@@ -64,6 +105,22 @@ object SongRecognitionClient {
                 "Prepoznavni streznik ni vrnil veljavnega JSON rezultata.",
                 error
             )
+        }
+
+        root.optStringOrNull("status")?.lowercase(Locale.US)?.let { status ->
+            if (status == "error") {
+                val errorBody = root.optJSONObject("error")
+                val code = errorBody?.optInt("error_code", -1) ?: -1
+                val message = errorBody?.optStringOrNull("error_message")
+                    ?: root.optStringOrNull("error")
+                    ?: "neznana napaka"
+                if (code == 901 || code == 902) {
+                    throw SongRecognitionException(
+                        "Brezplacna AudD kvota je porabljena. V nastavitvah prepoznave vnesi svoj AudD token."
+                    )
+                }
+                throw SongRecognitionException("Prepoznavanje ni uspelo: $message ($code).")
+            }
         }
 
         root.optJSONObject("status")?.let { status ->
@@ -79,6 +136,19 @@ object SongRecognitionClient {
             }
         }
 
+        if (root.has("result")) {
+            when (val result = root.opt("result")) {
+                JSONObject.NULL -> throw SongRecognitionException("Skladbe ni bilo mogoce prepoznati.")
+                is JSONObject -> result.toRecognitionResult()?.let { return it }
+                is JSONArray -> {
+                    if (result.length() == 0) {
+                        throw SongRecognitionException("Skladbe ni bilo mogoce prepoznati.")
+                    }
+                    bestResult(result)?.let { return it }
+                }
+            }
+        }
+
         root.toRecognitionResult()?.let { return it }
 
         val metadata = root.optJSONObject("metadata")
@@ -88,7 +158,12 @@ object SongRecognitionClient {
         throw SongRecognitionException("Prepoznavni rezultat ne vsebuje naslova in izvajalca.")
     }
 
-    private fun postSample(endpointUrl: String, sample: File): String {
+    private fun postSample(
+        endpointUrl: String,
+        sample: File,
+        fileFieldName: String,
+        textParts: List<Pair<String, String>>
+    ): String {
         if (!sample.isFile || sample.length() <= 0L) {
             throw SongRecognitionException("Zvocni vzorec ni veljavna datoteka.")
         }
@@ -106,9 +181,10 @@ object SongRecognitionClient {
 
         try {
             BufferedOutputStream(connection.outputStream).use { output ->
-                output.writeTextPart(boundary, "sample_bytes", sample.length().toString())
-                output.writeTextPart(boundary, "data_type", "audio")
-                output.writeFilePart(boundary, "sample", sample.name, "audio/mp4", sample)
+                textParts.forEach { (name, value) ->
+                    output.writeTextPart(boundary, name, value)
+                }
+                output.writeFilePart(boundary, fileFieldName, sample.name, "audio/mp4", sample)
                 output.writeAscii("--$boundary--\r\n")
             }
 
@@ -226,4 +302,5 @@ object SongRecognitionClient {
 
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val READ_TIMEOUT_MS = 30_000
+    private const val AUDD_ENDPOINT = "https://api.audd.io/"
 }

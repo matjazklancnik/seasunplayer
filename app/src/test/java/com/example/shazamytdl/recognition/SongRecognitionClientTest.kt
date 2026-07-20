@@ -58,6 +58,57 @@ class SongRecognitionClientTest {
     }
 
     @Test
+    fun parsesAudDRecognitionResponse() {
+        val result = SongRecognitionClient.parseResponse(
+            """
+            {
+              "status": "success",
+              "result": {
+                "artist": "Imagine Dragons",
+                "title": "Warriors",
+                "album": "Warriors",
+                "song_link": "https://lis.tn/Warriors"
+              }
+            }
+            """.trimIndent()
+        )
+
+        assertEquals("Imagine Dragons", result.artist)
+        assertEquals("Warriors", result.title)
+    }
+
+    @Test
+    fun throwsForAudDNoResult() {
+        assertThrows(SongRecognitionException::class.java) {
+            SongRecognitionClient.parseResponse(
+                """
+                {
+                  "status": "success",
+                  "result": null
+                }
+                """.trimIndent()
+            )
+        }
+    }
+
+    @Test
+    fun throwsForAudDQuotaError() {
+        assertThrows(SongRecognitionException::class.java) {
+            SongRecognitionClient.parseResponse(
+                """
+                {
+                  "status": "error",
+                  "error": {
+                    "error_code": 901,
+                    "error_message": "No api_token passed, and the limit was reached."
+                  }
+                }
+                """.trimIndent()
+            )
+        }
+    }
+
+    @Test
     fun throwsForNoRecognitionStatus() {
         assertThrows(SongRecognitionException::class.java) {
             SongRecognitionClient.parseResponse(

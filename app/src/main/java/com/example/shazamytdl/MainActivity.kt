@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -223,6 +224,12 @@ private fun MainScreen(
                 ?: defaultSongRecognitionEndpoint
         )
     }
+    var songRecognitionApiToken by remember {
+        mutableStateOf(
+            SongRecognitionSettings.auddApiToken(context)
+                ?: SongRecognitionSettings.DEFAULT_AUDD_API_TOKEN
+        )
+    }
     var showSongRecognitionSettings by remember { mutableStateOf(false) }
     var songRecognitionJob by remember { mutableStateOf<Job?>(null) }
     var songRecognitionResult by remember { mutableStateOf<SongRecognitionResult?>(null) }
@@ -259,9 +266,9 @@ private fun MainScreen(
 
     fun startSongRecognition() {
         val endpoint = SongRecognitionSettings.normalizedEndpoint(songRecognitionEndpoint)
-        if (endpoint == null) {
+        if (songRecognitionEndpoint.isNotBlank() && endpoint == null) {
             showSongRecognitionSettings = true
-            message = "Za slušno prepoznavanje nastavi HTTPS endpoint."
+            message = "Custom endpoint za prepoznavanje ni veljaven."
             return
         }
         if (isSongListening) return
@@ -277,7 +284,11 @@ private fun MainScreen(
                 val recordedSample = AudioSampleRecorder.record(context)
                 sample = recordedSample
                 val recognized = withContext(Dispatchers.IO) {
-                    SongRecognitionClient.recognize(endpoint, recordedSample)
+                    if (endpoint != null) {
+                        SongRecognitionClient.recognize(endpoint, recordedSample)
+                    } else {
+                        SongRecognitionClient.recognize(recordedSample, songRecognitionApiToken)
+                    }
                 }
                 songRecognitionResult = recognized
                 searchQuery = recognized.searchQuery
@@ -635,6 +646,12 @@ private fun MainScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    IconButton(onClick = { showSongRecognitionSettings = true }) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "Nastavitve slušnega prepoznavanja"
+                        )
+                    }
                     IconButton(onClick = { showAppearanceDialog = true }) {
                         Icon(Icons.Default.Palette, contentDescription = "Izberi videz")
                     }
@@ -707,7 +724,10 @@ private fun MainScreen(
                         onClick = {
                             if (isSongListening) {
                                 songRecognitionJob?.cancel()
-                            } else if (SongRecognitionSettings.normalizedEndpoint(songRecognitionEndpoint) == null) {
+                            } else if (
+                                songRecognitionEndpoint.isNotBlank() &&
+                                SongRecognitionSettings.normalizedEndpoint(songRecognitionEndpoint) == null
+                            ) {
                                 showSongRecognitionSettings = true
                             } else if (ContextCompat.checkSelfPermission(
                                     context,
@@ -921,13 +941,16 @@ private fun MainScreen(
     }
 
     if (showSongRecognitionSettings) {
-        RecognitionEndpointDialog(
-            endpoint = songRecognitionEndpoint,
-            onSave = { endpoint ->
+        RecognitionSettingsDialog(
+            apiToken = songRecognitionApiToken,
+            customEndpoint = songRecognitionEndpoint,
+            onSave = { apiToken, endpoint ->
+                SongRecognitionSettings.saveAudDApiToken(context, apiToken)
                 SongRecognitionSettings.saveEndpoint(context, endpoint)
+                songRecognitionApiToken = apiToken
                 songRecognitionEndpoint = endpoint
                 showSongRecognitionSettings = false
-                message = "Endpoint za prepoznavanje je shranjen."
+                message = "Nastavitve prepoznavanja so shranjene."
             },
             onDismiss = { showSongRecognitionSettings = false }
         )
@@ -1337,13 +1360,19 @@ private fun YouTubeSearchSection(
 }
 
 @Composable
-private fun RecognitionEndpointDialog(
-    endpoint: String,
-    onSave: (String) -> Unit,
+private fun RecognitionSettingsDialog(
+    apiToken: String,
+    customEndpoint: String,
+    onSave: (String, String) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var value by remember(endpoint) { mutableStateOf(endpoint) }
-    val normalized = SongRecognitionSettings.normalizedEndpoint(value)
+    var tokenValue by remember(apiToken) {
+        mutableStateOf(apiToken.ifBlank { SongRecognitionSettings.DEFAULT_AUDD_API_TOKEN })
+    }
+    var endpointValue by remember(customEndpoint) { mutableStateOf(customEndpoint) }
+    val normalizedEndpoint = SongRecognitionSettings.normalizedEndpoint(endpointValue)
+    val endpointIsValid = endpointValue.isBlank() || normalizedEndpoint != null
+    val token = tokenValue.trim().ifBlank { SongRecognitionSettings.DEFAULT_AUDD_API_TOKEN }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1351,16 +1380,25 @@ private fun RecognitionEndpointDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
-                    value = value,
-                    onValueChange = { value = it },
-                    label = { Text("Recognition endpoint") },
+                    value = tokenValue,
+                    onValueChange = { tokenValue = it },
+                    label = { Text("AudD API token") },
+                    placeholder = { Text(SongRecognitionSettings.DEFAULT_AUDD_API_TOKEN) },
+                    singleLine = true,
+                    supportingText = { Text("Privzeti test token je omejen na 10 zahtev/dan.") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = endpointValue,
+                    onValueChange = { endpointValue = it },
+                    label = { Text("Custom endpoint") },
                     placeholder = { Text("https://example.com/recognize") },
                     singleLine = true,
-                    isError = value.isNotBlank() && normalized == null,
-                    supportingText = if (value.isNotBlank() && normalized == null) {
+                    isError = endpointValue.isNotBlank() && normalizedEndpoint == null,
+                    supportingText = if (endpointValue.isNotBlank() && normalizedEndpoint == null) {
                         { Text("Uporabi veljaven HTTPS URL.") }
                     } else {
-                        null
+                        { Text("Pusti prazno za brezplačni AudD način.") }
                     },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1368,8 +1406,8 @@ private fun RecognitionEndpointDialog(
         },
         confirmButton = {
             Button(
-                enabled = normalized != null,
-                onClick = { normalized?.let(onSave) }
+                enabled = endpointIsValid,
+                onClick = { onSave(token, normalizedEndpoint.orEmpty()) }
             ) {
                 Text("Shrani")
             }
