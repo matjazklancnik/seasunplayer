@@ -213,6 +213,7 @@ private fun MainScreen(
     var isYoutubeSearchLoading by remember { mutableStateOf(false) }
     var youtubeSearchCompleted by remember { mutableStateOf(false) }
     var youtubeSearchError by remember { mutableStateOf<String?>(null) }
+    var youtubeSearchRequested by remember { mutableStateOf(false) }
     var isVoiceListening by remember { mutableStateOf(false) }
     var isSongListening by remember { mutableStateOf(false) }
     val defaultSongRecognitionEndpoint = remember {
@@ -241,7 +242,10 @@ private fun MainScreen(
     val voiceSearchController = remember(context) {
         VoiceSearchController(
             context = context,
-            onResult = { searchQuery = it },
+            onResult = {
+                searchQuery = it
+                youtubeSearchRequested = false
+            },
             onListeningChanged = { isVoiceListening = it },
             onErrorMessage = { message = it }
         )
@@ -292,6 +296,7 @@ private fun MainScreen(
                 }
                 songRecognitionResult = recognized
                 searchQuery = recognized.searchQuery
+                youtubeSearchRequested = false
                 message = "Prepoznano: ${recognized.artist} - ${recognized.title}"
             } catch (error: CancellationException) {
                 throw error
@@ -335,12 +340,12 @@ private fun MainScreen(
         }
     }
 
-    LaunchedEffect(searchQuery, visibleTracks.isEmpty()) {
+    LaunchedEffect(searchQuery, visibleTracks.isEmpty(), youtubeSearchRequested) {
         youtubeSearchResults = emptyList()
         youtubeSearchError = null
         youtubeSearchCompleted = false
         val query = searchQuery.trim()
-        if (query.length < 2 || visibleTracks.isNotEmpty()) {
+        if (query.length < 2 || (visibleTracks.isNotEmpty() && !youtubeSearchRequested)) {
             isYoutubeSearchLoading = false
             return@LaunchedEffect
         }
@@ -590,7 +595,10 @@ private fun MainScreen(
             val added = DownloadQueueManager.enqueue(track.id)
             withContext(Dispatchers.Main) {
                 refreshTracks()
-                if (clearTextSearch) searchQuery = ""
+                if (clearTextSearch) {
+                    searchQuery = ""
+                    youtubeSearchRequested = false
+                }
                 if (clearRecognizedSong) clearSongRecognition()
                 message = if (added) {
                     "YouTube skladba je dodana v čakalno vrsto."
@@ -710,7 +718,10 @@ private fun MainScreen(
 
         OutlinedTextField(
             value = searchQuery,
-            onValueChange = { searchQuery = it },
+            onValueChange = {
+                searchQuery = it
+                youtubeSearchRequested = false
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp),
@@ -780,7 +791,12 @@ private fun MainScreen(
                         )
                     }
                     if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { searchQuery = "" }) {
+                        IconButton(
+                            onClick = {
+                                searchQuery = ""
+                                youtubeSearchRequested = false
+                            }
+                        ) {
                             Icon(Icons.Default.Close, contentDescription = "Počisti iskanje")
                         }
                     }
@@ -792,6 +808,33 @@ private fun MainScreen(
         )
 
         Spacer(Modifier.height(8.dp))
+
+        if (
+            songRecognitionResult == null &&
+            searchQuery.trim().length >= 2 &&
+            visibleTracks.isNotEmpty() &&
+            !youtubeSearchRequested
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                OutlinedButton(
+                    onClick = { youtubeSearchRequested = true },
+                    modifier = Modifier.height(34.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Išči še na YouTubu", fontSize = 12.sp)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
 
         songRecognitionResult?.let { recognized ->
             YouTubeSearchSection(
@@ -844,13 +887,27 @@ private fun MainScreen(
             Spacer(Modifier.height(8.dp))
         }
 
-        if (songRecognitionResult == null && visibleTracks.isEmpty() && searchQuery.isNotBlank()) {
+        val shouldShowTextYouTubeSearch = songRecognitionResult == null &&
+            searchQuery.isNotBlank() &&
+            (visibleTracks.isEmpty() || youtubeSearchRequested)
+
+        if (shouldShowTextYouTubeSearch) {
             YouTubeSearchSection(
                 query = searchQuery,
                 results = youtubeSearchResults,
                 isLoading = isYoutubeSearchLoading,
                 searchCompleted = youtubeSearchCompleted,
                 error = youtubeSearchError,
+                headerText = if (visibleTracks.isEmpty()) {
+                    "Ni lokalnih zadetkov · rezultati YouTube"
+                } else {
+                    "Dodatni YouTube zadetki"
+                },
+                onDismiss = if (youtubeSearchRequested && visibleTracks.isNotEmpty()) {
+                    { youtubeSearchRequested = false }
+                } else {
+                    null
+                },
                 onDownload = { result ->
                     enqueueYouTubeResult(
                         result = result,
@@ -859,9 +916,12 @@ private fun MainScreen(
                     )
                 }
             )
-        } else if (tracks.isEmpty()) {
+            Spacer(Modifier.height(8.dp))
+        }
+
+        if (tracks.isEmpty() && !shouldShowTextYouTubeSearch) {
             EmptyState()
-        } else {
+        } else if (visibleTracks.isNotEmpty()) {
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -871,7 +931,10 @@ private fun MainScreen(
                     TrackCard(
                         track = track,
                         onSelect = if (searchQuery.isNotBlank()) {
-                            { searchQuery = "" }
+                            {
+                                searchQuery = ""
+                                youtubeSearchRequested = false
+                            }
                         } else {
                             null
                         },
@@ -1293,7 +1356,7 @@ private fun YouTubeSearchSection(
             )
             if (onDismiss != null) {
                 IconButton(onClick = onDismiss, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Default.Close, contentDescription = "Zapri prepoznano skladbo")
+                    Icon(Icons.Default.Close, contentDescription = "Zapri YouTube rezultate")
                 }
             }
         }
@@ -1318,8 +1381,8 @@ private fun YouTubeSearchSection(
                 "Tudi na YouTubu ni bilo zadetkov.",
                 style = MaterialTheme.typography.bodyMedium
             )
-            else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(results, key = { it.videoId }) { result ->
+            else -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                results.forEach { result ->
                     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                         Row(
                             modifier = Modifier.padding(14.dp),
