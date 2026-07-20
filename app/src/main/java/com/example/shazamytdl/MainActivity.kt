@@ -577,6 +577,24 @@ private fun MainScreen(
         }
     }
 
+    fun cancelDownload(track: Track) {
+        scope.launch(Dispatchers.IO) {
+            val cancelled = DownloadQueueManager.cancel(track.id)
+            withContext(Dispatchers.Main) {
+                refreshTracks()
+                message = if (cancelled) {
+                    if (track.status == TrackStatus.DOWNLOADING) {
+                        "Prenos je preklican."
+                    } else {
+                        "Skladba je odstranjena iz čakalne vrste."
+                    }
+                } else {
+                    "Skladba ni več v čakalni vrsti."
+                }
+            }
+        }
+    }
+
     fun enqueueYouTubeResult(
         result: YouTubeSearchResult,
         clearTextSearch: Boolean,
@@ -982,6 +1000,7 @@ private fun MainScreen(
                             }
                         },
                         onDelete = { trackToDelete = track },
+                        onCancelDownload = { cancelDownload(track) },
                         onShowError = {
                             errorToShow = it
                         }
@@ -1187,10 +1206,14 @@ private fun MainScreen(
             onDismissRequest = { trackToDelete = null },
             title = { Text("Odstrani skladbo?") },
             text = {
-                Text(
-                    "${track.artist} – ${track.title}\n\n" +
-                        "Izbrisana bo tudi njena lokalna zvočna datoteka."
-                )
+                val downloadText = if (track.status == TrackStatus.QUEUED ||
+                    track.status == TrackStatus.DOWNLOADING
+                ) {
+                    "Prenos bo preklican in skladba bo odstranjena iz knjižnice."
+                } else {
+                    "Izbrisana bo tudi njena lokalna zvočna datoteka."
+                }
+                Text("${track.artist} – ${track.title}\n\n$downloadText")
             },
             confirmButton = {
                 Button(
@@ -1202,12 +1225,11 @@ private fun MainScreen(
                         playerHolder?.removeTrack(track.id)
                         scope.launch(Dispatchers.IO) {
                             runCatching {
-                                check(DownloadQueueManager.removeQueued(track.id)) {
-                                    "Aktivnega prenosa ni mogoče odstraniti. Počakaj na zaključek ali timeout."
-                                }
+                                DownloadQueueManager.removeQueued(track.id)
                                 val trackDir = File(File(context.filesDir, "music"), track.id)
-                                check(!trackDir.exists() || trackDir.deleteRecursively()) {
-                                    "Lokalne datoteke ni bilo mogoče izbrisati."
+                                val filesDeleted = !trackDir.exists() || trackDir.deleteRecursively()
+                                if (!filesDeleted && track.status != TrackStatus.DOWNLOADING) {
+                                    error("Lokalne datoteke ni bilo mogoče izbrisati.")
                                 }
                                 repository.delete(track.id)
                             }.onSuccess {
@@ -1695,6 +1717,7 @@ private fun TrackCard(
     onEditSource: () -> Unit,
     onPromote: () -> Unit,
     onDelete: () -> Unit,
+    onCancelDownload: () -> Unit,
     onShowError: (String) -> Unit
 ) {
     Card(
@@ -1814,9 +1837,25 @@ private fun TrackCard(
                         Text("Naslednja", fontSize = 12.sp)
                     }
                 }
+                if (track.status == TrackStatus.QUEUED || track.status == TrackStatus.DOWNLOADING) {
+                    TextButton(
+                        onClick = onCancelDownload,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        ),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp)
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text("Prekliči", fontSize = 12.sp)
+                    }
+                }
                 IconButton(
                     onClick = onDelete,
-                    enabled = track.status != TrackStatus.DOWNLOADING,
                     modifier = Modifier.size(32.dp)
                 ) {
                     Icon(

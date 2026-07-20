@@ -28,6 +28,11 @@ sealed interface DownloadQueueEvent {
 }
 
 object DownloadQueueManager {
+    private data class QueueRemoval(
+        val removed: Boolean,
+        val wasActive: Boolean
+    )
+
     private data class QueueEntry(
         val trackId: String,
         val generation: Long,
@@ -43,6 +48,8 @@ object DownloadQueueManager {
 
     @Volatile
     private var activeTrackId: String? = null
+    @Volatile
+    private var activeCancelToken: DownloadCancelToken? = null
 
     private val _progress = MutableStateFlow<Map<String, String>>(emptyMap())
     val progress = _progress.asStateFlow()
@@ -113,20 +120,52 @@ object DownloadQueueManager {
 
     fun removeQueued(trackId: String): Boolean {
         check(initialized) { "DownloadQueueManager is not initialized" }
-        val canRemove = synchronized(queueLock) {
-            if (activeTrackId == trackId) return false
+        removeFromQueue(trackId)
+        return true
+    }
+
+    fun cancel(trackId: String): Boolean {
+        check(initialized) { "DownloadQueueManager is not initialized" }
+        val removal = removeFromQueue(trackId)
+        if (!removal.removed) return false
+
+        repository.resetDownloadState(trackId)
+        if (!removal.wasActive) {
+            File(File(appContext.filesDir, "music"), trackId).deleteRecursively()
+        }
+        _events.tryEmit(DownloadQueueEvent.StatusChanged(trackId))
+        return true
+    }
+
+    private fun removeFromQueue(trackId: String): QueueRemoval {
+        var cancelToken: DownloadCancelToken? = null
+        var wasActive = false
+        val removed = synchronized(queueLock) {
+            var removedInQueue = false
+            if (activeTrackId == trackId) {
+                wasActive = true
+                cancelToken = activeCancelToken
+                removedInQueue = true
+            }
+
             val entry = priorityQueue.firstOrNull { it.trackId == trackId }
                 ?: regularQueue.firstOrNull { it.trackId == trackId }
             if (entry != null) {
                 priorityQueue.remove(entry)
                 regularQueue.remove(entry)
+                removedInQueue = true
             }
-            pendingTrackIds.remove(trackId)
-            true
+            if (pendingTrackIds.remove(trackId)) removedInQueue = true
+            removedInQueue
         }
-        if (canRemove) _progress.update { it - trackId }
+
+        cancelToken?.cancel()
+        if (removed) {
+            _progress.update { it - trackId }
+            _events.tryEmit(DownloadQueueEvent.StatusChanged(trackId))
+        }
         stopDownloadServiceIfIdle()
-        return canRemove
+        return QueueRemoval(removed = removed, wasActive = wasActive)
     }
 
     private fun enqueueInternal(trackId: String) {
@@ -154,13 +193,20 @@ object DownloadQueueManager {
     private suspend fun consumeQueue() {
         for (ignored in queueSignal) {
             while (true) {
+                val cancelToken = DownloadCancelToken()
                 val entry = synchronized(queueLock) {
                     (priorityQueue.pollFirst() ?: regularQueue.pollFirst())
-                        ?.also { activeTrackId = it.trackId }
+                        ?.also {
+                            activeTrackId = it.trackId
+                            activeCancelToken = cancelToken
+                        }
                 } ?: break
-                processTrack(entry)
+                processTrack(entry, cancelToken)
                 synchronized(queueLock) {
-                    if (activeTrackId == entry.trackId) activeTrackId = null
+                    if (activeTrackId == entry.trackId) {
+                        activeTrackId = null
+                        activeCancelToken = null
+                    }
                 }
             }
             stopDownloadServiceIfIdle()
@@ -188,12 +234,13 @@ object DownloadQueueManager {
         }
     }
 
-    private fun processTrack(entry: QueueEntry) {
+    private fun processTrack(entry: QueueEntry, cancelToken: DownloadCancelToken) {
         val trackId = entry.trackId
         var outDir: File? = null
         var retryQueued = false
         try {
             if (entry.generation != libraryGeneration) return
+            cancelToken.throwIfCancelled()
             val track = repository.getById(trackId) ?: return
             val originalUrl = track.sourceUrl
             val downloadUrl = if (!originalUrl.isNullOrBlank() &&
@@ -214,15 +261,17 @@ object DownloadQueueManager {
                 context = appContext,
                 url = downloadUrl,
                 outputDir = trackOutputDir,
-                subPath = "audio"
+                subPath = "audio",
+                cancelToken = cancelToken
             ) { progress, eta ->
-                if (entry.generation == libraryGeneration) {
+                if (entry.generation == libraryGeneration && !cancelToken.isCancelled) {
                     _progress.update {
                         it + (trackId to "Prenašanje: ${progress.toInt()}% · ETA ${eta}s")
                     }
                 }
             }
 
+            cancelToken.throwIfCancelled()
             if (entry.generation != libraryGeneration || repository.getById(trackId) == null) {
                 trackOutputDir.deleteRecursively()
                 return
@@ -239,13 +288,20 @@ object DownloadQueueManager {
                         Log.w("DownloadQueue", "Could not delete stale file ${staleFile.absolutePath}")
                     }
                 }
+            cancelToken.throwIfCancelled()
             _progress.update { it + (trackId to "Pridobivanje naslovnice...") }
             val artwork = ArtworkResolver.resolveAndDownload(
                 artist = track.artist,
                 title = track.title,
                 youtubeThumbnailUrl = downloaded.thumbnailUrl,
-                outputDir = trackOutputDir
+                outputDir = trackOutputDir,
+                cancelToken = cancelToken
             )
+            cancelToken.throwIfCancelled()
+            if (entry.generation != libraryGeneration || repository.getById(trackId) == null) {
+                trackOutputDir.deleteRecursively()
+                return
+            }
             if (artwork != null) {
                 repository.updateArtwork(
                     id = trackId,
@@ -253,9 +309,14 @@ object DownloadQueueManager {
                     artworkSource = artwork.source
                 )
             }
+            cancelToken.throwIfCancelled()
             _events.tryEmit(DownloadQueueEvent.Completed(trackId, downloaded.file.name))
         } catch (error: Throwable) {
-            if (entry.generation != libraryGeneration) {
+            if (error is DownloadCancelledException ||
+                cancelToken.isCancelled ||
+                entry.generation != libraryGeneration ||
+                repository.getById(trackId) == null
+            ) {
                 outDir?.deleteRecursively()
                 return
             }

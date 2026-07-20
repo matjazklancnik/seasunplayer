@@ -28,6 +28,44 @@ data class YouTubeSearchResult(
     val durationSeconds: Long?
 )
 
+class DownloadCancelledException : RuntimeException("Prenos je bil preklican.")
+
+class DownloadCancelToken {
+    private val cancelled = AtomicBoolean(false)
+    private val callbackLock = Any()
+    private var cancelAction: (() -> Unit)? = null
+
+    val isCancelled: Boolean
+        get() = cancelled.get()
+
+    fun cancel() {
+        val action = synchronized(callbackLock) {
+            if (cancelled.compareAndSet(false, true)) cancelAction else null
+        }
+        action?.invoke()
+    }
+
+    fun throwIfCancelled() {
+        if (isCancelled) throw DownloadCancelledException()
+    }
+
+    internal fun setCancelAction(action: () -> Unit) {
+        val runNow = synchronized(callbackLock) {
+            if (isCancelled) {
+                true
+            } else {
+                cancelAction = action
+                false
+            }
+        }
+        if (runNow) action()
+    }
+
+    internal fun clearCancelAction() {
+        synchronized(callbackLock) { cancelAction = null }
+    }
+}
+
 object YoutubeDlBridge {
     private val operationLock = Any()
     @Volatile
@@ -111,9 +149,11 @@ object YoutubeDlBridge {
         url: String,
         outputDir: File,
         subPath: String? = null,
+        cancelToken: DownloadCancelToken? = null,
         onProgress: (progressPercent: Float, etaSeconds: Long) -> Unit
     ): DownloadedMedia {
         init(context)
+        cancelToken?.throwIfCancelled()
 
         check(outputDir.exists() || outputDir.mkdirs()) {
             "Could not create output directory: ${outputDir.absolutePath}"
@@ -127,6 +167,7 @@ object YoutubeDlBridge {
         val outputTemplate = File(outputDir, "$fileNameTemplate.%(ext)s").absolutePath
 
         val resolvedInfo = synchronized(operationLock) {
+            cancelToken?.throwIfCancelled()
             YoutubeDL.getInstance().getInfo(
                 YoutubeDLRequest(url).apply {
                     addOption("--no-playlist")
@@ -135,6 +176,7 @@ object YoutubeDlBridge {
                 }
             )
         }
+        cancelToken?.throwIfCancelled()
         val resolvedUrl = resolvedInfo.webpageUrl
             ?.takeIf { it.startsWith("https://www.youtube.com/") || it.startsWith("https://youtu.be/") }
             ?: error("yt-dlp ni vrnil veljavnega YouTube URL-ja")
@@ -183,24 +225,39 @@ object YoutubeDlBridge {
             }
         }
         var executionError: Throwable? = null
+        val cancelAction = {
+            Log.d("YoutubeDlBridge", "Cancelling download process: $processId")
+            YoutubeDL.getInstance().destroyProcessById(processId)
+            Unit
+        }
+        cancelToken?.setCancelAction(cancelAction)
         try {
             synchronized(operationLock) {
+                cancelToken?.throwIfCancelled()
                 YoutubeDL.getInstance().execute(request, processId) { progress, etaInSeconds, _ ->
+                    cancelToken?.throwIfCancelled()
                     lastActivityAt.set(System.currentTimeMillis())
                     onProgress(progress, etaInSeconds)
                 }
             }
         } catch (error: Throwable) {
-            executionError = error
+            executionError = if (cancelToken?.isCancelled == true) {
+                DownloadCancelledException()
+            } else {
+                error
+            }
         } finally {
+            cancelToken?.clearCancelAction()
             finished.set(true)
             watchdog.interrupt()
         }
+        cancelToken?.throwIfCancelled()
         if (timedOut.get()) {
             error("Prenos je bil brez napredka več kot 3 minute in je bil prekinjen")
         }
         executionError?.let { throw it }
 
+        cancelToken?.throwIfCancelled()
         val candidates = outputDir.listFiles()
             ?.filter { it.isFile && it.extension.lowercase() in AUDIO_EXTENSIONS }
             .orEmpty()

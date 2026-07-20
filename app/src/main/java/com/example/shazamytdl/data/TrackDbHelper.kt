@@ -172,6 +172,22 @@ class TrackRepository(context: Context) {
         )
     }
 
+    fun resetDownloadState(id: String) {
+        val existing = getById(id) ?: return
+        val status = if (existing.sourceUrl.isNullOrBlank()) TrackStatus.NEW else TrackStatus.URL_SET
+        updateFields(
+            id,
+            ContentValues().apply {
+                putNull("local_path")
+                putNull("artwork_path")
+                putNull("artwork_source")
+                put("status", status.name)
+                putNull("last_error")
+                put("updated_at", System.currentTimeMillis())
+            }
+        )
+    }
+
     fun updateArtwork(id: String, artworkPath: String?, artworkSource: String?) {
         updateFields(
             id,

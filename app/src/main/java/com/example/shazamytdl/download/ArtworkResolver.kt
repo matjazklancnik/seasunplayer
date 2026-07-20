@@ -20,9 +20,11 @@ object ArtworkResolver {
         artist: String,
         title: String,
         youtubeThumbnailUrl: String?,
-        outputDir: File
+        outputDir: File,
+        cancelToken: DownloadCancelToken? = null
     ): ResolvedArtwork? {
-        val musicBrainzUrl = runCatching { findMusicBrainzArtwork(artist, title) }
+        cancelToken?.throwIfCancelled()
+        val musicBrainzUrl = runCatching { findMusicBrainzArtwork(artist, title, cancelToken) }
             .onFailure { Log.w(TAG, "MusicBrainz artwork lookup failed", it) }
             .getOrNull()
 
@@ -33,7 +35,8 @@ object ArtworkResolver {
         }
 
         for ((source, url) in candidates) {
-            val file = runCatching { downloadImage(url, outputDir) }
+            cancelToken?.throwIfCancelled()
+            val file = runCatching { downloadImage(url, outputDir, cancelToken) }
                 .onFailure { Log.w(TAG, "Could not download $source artwork", it) }
                 .getOrNull()
             if (file != null) return ResolvedArtwork(file, source)
@@ -41,17 +44,23 @@ object ArtworkResolver {
         return null
     }
 
-    private fun findMusicBrainzArtwork(artist: String, title: String): String? {
+    private fun findMusicBrainzArtwork(
+        artist: String,
+        title: String,
+        cancelToken: DownloadCancelToken?
+    ): String? {
         val query = "recording:\"$title\" AND artist:\"$artist\""
         val encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.name())
         val response = getJson(
-            "https://musicbrainz.org/ws/2/recording/?query=$encoded&fmt=json&limit=5"
+            "https://musicbrainz.org/ws/2/recording/?query=$encoded&fmt=json&limit=5",
+            cancelToken
         )
         val recordings = response.optJSONArray("recordings") ?: return null
         val wantedTitle = normalized(title)
         val wantedArtist = normalized(artist)
 
         for (index in 0 until recordings.length()) {
+            cancelToken?.throwIfCancelled()
             val recording = recordings.optJSONObject(index) ?: continue
             if (recording.optInt("score", 0) < 95) continue
             if (normalized(recording.optString("title")) != wantedTitle) continue
@@ -86,17 +95,21 @@ object ArtworkResolver {
                     primaryType in setOf("Album", "Single", "EP") &&
                     !isCompilation
                 ) {
-                    findCoverArtUrl(groupId)?.let { return it }
+                    findCoverArtUrl(groupId, cancelToken)?.let { return it }
                 }
             }
-            fallbackGroupId?.let { findCoverArtUrl(it) }?.let { return it }
+            fallbackGroupId?.let { findCoverArtUrl(it, cancelToken) }?.let { return it }
         }
         return null
     }
 
-    private fun findCoverArtUrl(releaseGroupId: String): String? {
+    private fun findCoverArtUrl(
+        releaseGroupId: String,
+        cancelToken: DownloadCancelToken?
+    ): String? {
+        cancelToken?.throwIfCancelled()
         val response = runCatching {
-            getJson("https://coverartarchive.org/release-group/$releaseGroupId")
+            getJson("https://coverartarchive.org/release-group/$releaseGroupId", cancelToken)
         }.getOrNull() ?: return null
         val images = response.optJSONArray("images") ?: return null
         val image = (0 until images.length())
@@ -110,39 +123,56 @@ object ArtworkResolver {
             ?: image.optString("image").takeIf { it.isNotBlank() }
     }
 
-    private fun getJson(url: String): JSONObject {
+    private fun getJson(url: String, cancelToken: DownloadCancelToken?): JSONObject {
+        cancelToken?.throwIfCancelled()
         val connection = openConnection(url)
         return try {
             val status = connection.responseCode
+            cancelToken?.throwIfCancelled()
             if (status !in 200..299) error("HTTP $status")
             val body = connection.inputStream.bufferedReader().use { it.readText() }
+            cancelToken?.throwIfCancelled()
             JSONObject(body)
         } finally {
             connection.disconnect()
         }
     }
 
-    private fun downloadImage(url: String, outputDir: File): File {
+    private fun downloadImage(
+        url: String,
+        outputDir: File,
+        cancelToken: DownloadCancelToken?
+    ): File {
+        cancelToken?.throwIfCancelled()
         check(outputDir.exists() || outputDir.mkdirs())
         val connection = openConnection(url)
         val temporary = File(outputDir, "cover.part")
         val target = File(outputDir, "cover.img")
         try {
             val status = connection.responseCode
+            cancelToken?.throwIfCancelled()
             if (status !in 200..299) error("HTTP $status")
             val contentLength = connection.contentLengthLong
             if (contentLength > MAX_IMAGE_BYTES) error("Naslovnica je prevelika")
             connection.inputStream.use { input ->
                 temporary.outputStream().use { output ->
-                    input.copyTo(output)
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        cancelToken?.throwIfCancelled()
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                    }
                 }
             }
+            cancelToken?.throwIfCancelled()
             if (temporary.length() == 0L || temporary.length() > MAX_IMAGE_BYTES) {
                 error("Neveljavna velikost naslovnice")
             }
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(temporary.absolutePath, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) error("Datoteka ni veljavna slika")
+            cancelToken?.throwIfCancelled()
 
             if (target.exists() && !target.delete()) error("Stare naslovnice ni mogoče zamenjati")
             if (!temporary.renameTo(target)) {
