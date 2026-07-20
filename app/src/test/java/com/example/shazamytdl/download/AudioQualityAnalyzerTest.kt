@@ -32,6 +32,33 @@ class AudioQualityAnalyzerTest {
     }
 
     @Test
+    fun retriesSuspiciouslyQuietCandidate() {
+        val report = AudioLoudnessReport(
+            rmsDb = -35.0,
+            activeRmsDb = -27.0,
+            peakDb = -8.0,
+            sampleCount = 100_000,
+            activeSampleCount = 55_000
+        )
+
+        assertFalse(AudioQualityAnalyzer.isTooQuiet(report))
+        assertTrue(AudioQualityAnalyzer.shouldTryNextCandidate(report))
+    }
+
+    @Test
+    fun keepsClearlyLoudCandidate() {
+        val report = AudioLoudnessReport(
+            rmsDb = -22.0,
+            activeRmsDb = -18.0,
+            peakDb = -2.0,
+            sampleCount = 100_000,
+            activeSampleCount = 90_000
+        )
+
+        assertFalse(AudioQualityAnalyzer.shouldTryNextCandidate(report))
+    }
+
+    @Test
     fun ignoresVeryShortAnalysis() {
         val report = AudioLoudnessReport(
             rmsDb = -50.0,
@@ -42,5 +69,6 @@ class AudioQualityAnalyzerTest {
         )
 
         assertFalse(AudioQualityAnalyzer.isTooQuiet(report))
+        assertFalse(AudioQualityAnalyzer.shouldTryNextCandidate(report))
     }
 }

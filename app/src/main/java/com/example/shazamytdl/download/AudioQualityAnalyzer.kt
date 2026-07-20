@@ -58,6 +58,14 @@ object AudioQualityAnalyzer {
             (report.rmsDb < QUIET_RMS_DB && report.peakDb < QUIET_SOFT_PEAK_DB)
     }
 
+    fun shouldTryNextCandidate(report: AudioLoudnessReport): Boolean {
+        if (report.sampleCount < MIN_ANALYZED_SAMPLES) return false
+        return isTooQuiet(report) ||
+            report.activeRmsDb < SUSPECT_ACTIVE_RMS_DB ||
+            report.rmsDb < SUSPECT_RMS_DB ||
+            report.peakDb < SUSPECT_PEAK_DB
+    }
+
     private fun findAudioTrack(extractor: MediaExtractor): Int? {
         for (index in 0 until extractor.trackCount) {
             val format = extractor.getTrackFormat(index)
@@ -238,4 +246,7 @@ object AudioQualityAnalyzer {
     private const val QUIET_ACTIVE_RMS_DB = -30.0
     private const val QUIET_RMS_DB = -40.0
     private const val QUIET_SOFT_PEAK_DB = -12.0
+    private const val SUSPECT_ACTIVE_RMS_DB = -26.0
+    private const val SUSPECT_RMS_DB = -34.0
+    private const val SUSPECT_PEAK_DB = -12.0
 }

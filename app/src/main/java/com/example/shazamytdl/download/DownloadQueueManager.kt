@@ -389,12 +389,12 @@ object DownloadQueueManager {
                 )
             }
             if (loudness != null &&
-                AudioQualityAnalyzer.isTooQuiet(loudness) &&
+                AudioQualityAnalyzer.shouldTryNextCandidate(loudness) &&
                 index < candidates.lastIndex
             ) {
                 lastQuietReport = loudness
                 _progress.update {
-                    it + (track.id to "Zadetek ${candidate.label} je pretih · poskušam naslednjega")
+                    it + (track.id to "Zadetek ${candidate.label} je tih · poskušam naslednjega")
                 }
                 outputDir.deleteRecursively()
                 return@forEachIndexed
@@ -410,11 +410,7 @@ object DownloadQueueManager {
     }
 
     private fun downloadCandidates(track: Track): List<DownloadCandidate> {
-        val originalUrl = track.sourceUrl?.trim()
-        if (!originalUrl.isNullOrBlank() && originalUrl.isYouTubeUrl()) {
-            return listOf(DownloadCandidate(originalUrl, "1/1"))
-        }
-
+        val originalUrl = track.sourceUrl?.trim()?.takeIf { it.isYouTubeUrl() }
         val query = "${track.artist} - ${track.title}"
         val results = runCatching {
             YoutubeDlBridge.searchYouTube(appContext, query, AUTO_SEARCH_CANDIDATE_COUNT)
@@ -422,10 +418,14 @@ object DownloadQueueManager {
             Log.w("DownloadQueue", "Could not prefetch YouTube candidates for $query", error)
         }.getOrDefault(emptyList())
 
-        val urls = results
-            .map { it.url }
-            .filter { it.isYouTubeUrl() }
-            .distinct()
+        val urls = buildList {
+            originalUrl?.let { add(it) }
+            results
+                .map { it.url }
+                .filter { it.isYouTubeUrl() }
+                .forEach(::add)
+        }
+            .distinctBy { it.normalizedYouTubeUrlKey() }
             .take(AUTO_SEARCH_CANDIDATE_COUNT)
 
         val fallbackUrls = urls.ifEmpty { listOf("ytsearch1:$query") }
@@ -435,6 +435,12 @@ object DownloadQueueManager {
     }
 
     private fun String.isYouTubeUrl(): Boolean = contains("youtube.com") || contains("youtu.be")
+
+    private fun String.normalizedYouTubeUrlKey(): String {
+        val videoId = Regex("[?&]v=([^&#]+)").find(this)?.groupValues?.getOrNull(1)
+            ?: Regex("youtu\\.be/([^?&#/]+)").find(this)?.groupValues?.getOrNull(1)
+        return videoId ?: this.substringBefore('&').substringBefore("&list=")
+    }
 
     private const val AUTO_SEARCH_CANDIDATE_COUNT = 3
 }
