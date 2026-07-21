@@ -1,6 +1,7 @@
 package com.example.shazamytdl
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
@@ -8,6 +9,10 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.ViewGroup
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.IntentSenderRequest
@@ -15,6 +20,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -38,6 +44,8 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.OfflinePin
@@ -97,6 +105,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
@@ -238,6 +249,9 @@ private fun MainScreen(
     var isSongRecognitionSearchLoading by remember { mutableStateOf(false) }
     var songRecognitionSearchCompleted by remember { mutableStateOf(false) }
     var songRecognitionSearchError by remember { mutableStateOf<String?>(null) }
+    var videoPreview by remember { mutableStateOf<YouTubeVideoPreview?>(null) }
+    var videoPreviewFullscreen by remember { mutableStateOf(false) }
+    var videoPreviewLoadingTrackId by remember { mutableStateOf<String?>(null) }
 
     val voiceSearchController = remember(context) {
         VoiceSearchController(
@@ -562,6 +576,13 @@ private fun MainScreen(
     val currentTrack = remember(tracks, playingTrackId) {
         tracks.firstOrNull { it.id == playingTrackId }
     }
+    LaunchedEffect(currentTrack?.id) {
+        if (currentTrack?.id != videoPreview?.trackId) {
+            videoPreview = null
+            videoPreviewFullscreen = false
+            videoPreviewLoadingTrackId = null
+        }
+    }
     val playableTracks = remember(visibleTracks) {
         visibleTracks.filter { it.localPath?.let(::File)?.isFile == true }
     }
@@ -591,6 +612,49 @@ private fun MainScreen(
                 } else {
                     "Skladba ni več v čakalni vrsti."
                 }
+            }
+        }
+    }
+
+    fun openVideoPreview(track: Track) {
+        val sourceVideoId = track.sourceUrl?.let(::youtubeVideoIdFromUrl)
+        if (sourceVideoId != null) {
+            videoPreview = YouTubeVideoPreview(
+                trackId = track.id,
+                title = track.title,
+                artist = track.artist,
+                videoId = sourceVideoId
+            )
+            videoPreviewFullscreen = false
+            return
+        }
+        if (videoPreviewLoadingTrackId == track.id) return
+
+        videoPreviewLoadingTrackId = track.id
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    YoutubeDlBridge.searchYouTube(context, "${track.artist} - ${track.title}")
+                        .firstOrNull()
+                }
+            }
+            if (videoPreviewLoadingTrackId != track.id) return@launch
+
+            videoPreviewLoadingTrackId = null
+            result.onSuccess { youtubeResult ->
+                if (youtubeResult == null) {
+                    message = "YouTube preview za to skladbo ni najden."
+                } else {
+                    videoPreview = YouTubeVideoPreview(
+                        trackId = track.id,
+                        title = track.title,
+                        artist = track.artist,
+                        videoId = youtubeResult.videoId
+                    )
+                    videoPreviewFullscreen = false
+                }
+            }.onFailure { error ->
+                message = "YouTube preview ni uspel: ${error.message ?: error}"
             }
         }
     }
@@ -900,8 +964,23 @@ private fun MainScreen(
                 onShuffle = { playerHolder?.toggleShuffle() },
                 onRepeat = { playerHolder?.cycleRepeatMode() },
                 onSeek = { playerHolder?.seekTo(it) },
-                onStop = { playerHolder?.stop() }
+                onStop = { playerHolder?.stop() },
+                onArtworkClick = { openVideoPreview(activeTrack) },
+                isVideoPreviewLoading = videoPreviewLoadingTrackId == activeTrack.id
             )
+            videoPreview?.takeIf { it.trackId == activeTrack.id }?.let { preview ->
+                Spacer(Modifier.height(8.dp))
+                YouTubeVideoPreviewCard(
+                    preview = preview,
+                    isFullscreen = videoPreviewFullscreen,
+                    onFullscreen = { videoPreviewFullscreen = true },
+                    onExitFullscreen = { videoPreviewFullscreen = false },
+                    onClose = {
+                        videoPreview = null
+                        videoPreviewFullscreen = false
+                    }
+                )
+            }
             Spacer(Modifier.height(8.dp))
         }
 
@@ -1578,7 +1657,9 @@ private fun NowPlayingCard(
     onShuffle: () -> Unit,
     onRepeat: () -> Unit,
     onSeek: (Long) -> Unit,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    onArtworkClick: () -> Unit,
+    isVideoPreviewLoading: Boolean
 ) {
     var draggedPositionMs by remember(track.id) { mutableStateOf<Long?>(null) }
     val shownPosition = draggedPositionMs ?: positionMs
@@ -1593,7 +1674,13 @@ private fun NowPlayingCard(
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TrackArtwork(track.artworkPath, size = 48)
+                TrackArtwork(
+                    path = track.artworkPath,
+                    size = 48,
+                    onClick = onArtworkClick,
+                    showVideoBadge = true,
+                    isLoading = isVideoPreviewLoading
+                )
                 Spacer(Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -1892,8 +1979,189 @@ private fun String.normalizedForSearch(): String = Normalizer
     .replace(diacriticsRegex, "")
     .lowercase(Locale.ROOT)
 
+private data class YouTubeVideoPreview(
+    val trackId: String,
+    val title: String,
+    val artist: String,
+    val videoId: String
+)
+
 @Composable
-private fun TrackArtwork(path: String?, size: Int = 56) {
+private fun YouTubeVideoPreviewCard(
+    preview: YouTubeVideoPreview,
+    isFullscreen: Boolean,
+    onFullscreen: () -> Unit,
+    onExitFullscreen: () -> Unit,
+    onClose: () -> Unit
+) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+            contentColor = MaterialTheme.colorScheme.onSurface
+        )
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        preview.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        preview.artist,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(onClick = onFullscreen) {
+                    Icon(Icons.Default.Fullscreen, contentDescription = "Povečaj video")
+                }
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, contentDescription = "Zapri video")
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            if (!isFullscreen) {
+                YouTubeWebPlayer(
+                    videoId = preview.videoId,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black)
+                )
+            }
+        }
+    }
+
+    if (isFullscreen) {
+        YouTubeVideoFullscreenDialog(
+            preview = preview,
+            onExitFullscreen = onExitFullscreen,
+            onClose = onClose
+        )
+    }
+}
+
+@Composable
+private fun YouTubeVideoFullscreenDialog(
+    preview: YouTubeVideoPreview,
+    onExitFullscreen: () -> Unit,
+    onClose: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onExitFullscreen,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color.Black,
+            contentColor = Color.White
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            preview.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            preview.artist,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = onExitFullscreen) {
+                        Icon(Icons.Default.FullscreenExit, contentDescription = "Zmanjšaj video")
+                    }
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Default.Close, contentDescription = "Zapri video")
+                    }
+                }
+                YouTubeWebPlayer(
+                    videoId = preview.videoId,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(Color.Black)
+                )
+            }
+        }
+    }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun YouTubeWebPlayer(videoId: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val html = remember(videoId) { youtubeEmbedHtml(videoId) }
+    val webView = remember(videoId) {
+        WebView(context).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setBackgroundColor(android.graphics.Color.BLACK)
+            webViewClient = WebViewClient()
+            webChromeClient = WebChromeClient()
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.loadsImagesAutomatically = true
+            settings.mediaPlaybackRequiresUserGesture = true
+            loadDataWithBaseURL(
+                "https://www.youtube.com",
+                html,
+                "text/html",
+                "UTF-8",
+                null
+            )
+        }
+    }
+
+    DisposableEffect(webView) {
+        onDispose {
+            webView.stopLoading()
+            webView.loadUrl("about:blank")
+            webView.removeAllViews()
+            webView.destroy()
+        }
+    }
+
+    AndroidView(
+        factory = { webView },
+        modifier = modifier
+    )
+}
+
+@Composable
+private fun TrackArtwork(
+    path: String?,
+    size: Int = 56,
+    onClick: (() -> Unit)? = null,
+    showVideoBadge: Boolean = false,
+    isLoading: Boolean = false
+) {
     var image by remember(path) { mutableStateOf<ImageBitmap?>(null) }
 
     LaunchedEffect(path) {
@@ -1909,7 +2177,8 @@ private fun TrackArtwork(path: String?, size: Int = 56) {
         modifier = Modifier
             .size(size.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center
     ) {
         val loadedImage = image
@@ -1927,6 +2196,28 @@ private fun TrackArtwork(path: String?, size: Int = 56) {
                 modifier = Modifier.size(28.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+        when {
+            isLoading -> CircularProgressIndicator(
+                modifier = Modifier.size(22.dp),
+                strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary
+            )
+            showVideoBadge -> Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f),
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(4.dp)
+                    .size(20.dp)
+            ) {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = "Odpri video preview",
+                    modifier = Modifier.padding(3.dp)
+                )
+            }
         }
     }
 }
@@ -1988,6 +2279,70 @@ private fun isYoutubeUrl(value: String): Boolean {
     val host = uri.host?.lowercase() ?: return false
     return host == "youtu.be" || host == "youtube.com" || host.endsWith(".youtube.com")
 }
+
+private fun youtubeVideoIdFromUrl(value: String): String? {
+    val uri = runCatching { value.toUri() }.getOrNull() ?: return null
+    if (uri.scheme != "https" && uri.scheme != "http") return null
+    val host = uri.host?.lowercase(Locale.ROOT) ?: return null
+    val normalizedHost = host.removePrefix("www.")
+
+    if (normalizedHost == "youtu.be") {
+        return normalizedYouTubeVideoId(uri.pathSegments.firstOrNull())
+    }
+    if (normalizedHost != "youtube.com" && !normalizedHost.endsWith(".youtube.com")) {
+        return null
+    }
+
+    normalizedYouTubeVideoId(uri.getQueryParameter("v"))?.let { return it }
+    val segments = uri.pathSegments
+    val pathVideoId = when (segments.firstOrNull()) {
+        "embed", "shorts", "live" -> segments.getOrNull(1)
+        else -> null
+    }
+    return normalizedYouTubeVideoId(pathVideoId)
+}
+
+private fun normalizedYouTubeVideoId(value: String?): String? = value
+    ?.trim()
+    ?.takeIf { youtubeVideoIdRegex.matches(it) }
+
+private fun youtubeEmbedHtml(videoId: String): String {
+    val safeVideoId = normalizedYouTubeVideoId(videoId) ?: return ""
+    return """
+        <!doctype html>
+        <html>
+        <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                html, body {
+                    margin: 0;
+                    padding: 0;
+                    width: 100%;
+                    height: 100%;
+                    overflow: hidden;
+                    background: #000;
+                }
+                iframe {
+                    width: 100%;
+                    height: 100%;
+                    border: 0;
+                    display: block;
+                    background: #000;
+                }
+            </style>
+        </head>
+        <body>
+            <iframe
+                src="https://www.youtube.com/embed/$safeVideoId?playsinline=1&controls=1&rel=0&modestbranding=1"
+                allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowfullscreen>
+            </iframe>
+        </body>
+        </html>
+    """.trimIndent()
+}
+
+private val youtubeVideoIdRegex = Regex("^[A-Za-z0-9_-]{11}$")
 
 private fun formatTime(milliseconds: Long): String {
     val totalSeconds = milliseconds.coerceAtLeast(0L) / 1_000L
