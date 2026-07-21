@@ -313,7 +313,7 @@ object DownloadQueueManager {
                 return
             }
             Log.e("DownloadQueue", "Download failed for track $trackId", error)
-            val errorMessage = error.message ?: error.toString()
+            val errorMessage = DownloadErrorFormatter.userMessage(error)
             retryQueued = entry.attempt == 0 && repository.getById(trackId) != null &&
                 synchronized(queueLock) {
                     if (entry.generation != libraryGeneration || trackId !in pendingTrackIds) {
@@ -352,32 +352,59 @@ object DownloadQueueManager {
     ): DownloadedMedia {
         val candidates = downloadCandidates(track)
         var lastQuietReport: AudioLoudnessReport? = null
+        var refreshedYoutubeDl = false
+        var lastDownloadError: Throwable? = null
 
-        candidates.forEachIndexed { index, candidate ->
+        for ((index, candidate) in candidates.withIndex()) {
             cancelToken.throwIfCancelled()
-            if (outputDir.exists()) {
-                check(outputDir.deleteRecursively()) {
-                    "Prejšnjega poskusa prenosa ni bilo mogoče počistiti."
-                }
-            }
-            check(outputDir.mkdirs() || outputDir.isDirectory) {
-                "Could not create output directory: ${outputDir.absolutePath}"
-            }
+            prepareOutputDir(outputDir)
 
             _progress.update {
                 it + (track.id to "Prenašanje zadetka ${candidate.label}...")
             }
-            val downloaded = YoutubeDlBridge.downloadAllowedUrl(
-                context = appContext,
-                url = candidate.url,
-                outputDir = outputDir,
-                subPath = "audio",
-                cancelToken = cancelToken
-            ) { progress, eta ->
-                if (entry.generation == libraryGeneration && !cancelToken.isCancelled) {
-                    _progress.update {
-                        it + (track.id to "Zadetek ${candidate.label}: ${progress.toInt()}% · ETA ${eta}s")
+            val downloaded = try {
+                downloadCandidate(track, outputDir, entry, candidate, cancelToken)
+            } catch (firstError: Throwable) {
+                if (firstError is DownloadCancelledException || cancelToken.isCancelled) throw firstError
+                if (!refreshedYoutubeDl) {
+                    refreshedYoutubeDl = true
+                    Log.w(
+                        "DownloadQueue",
+                        "Download candidate ${candidate.label} failed; refreshing yt-dlp before retry",
+                        firstError
+                    )
+                    _progress.update { it + (track.id to "Osvežujem yt-dlp po napaki...") }
+                    YoutubeDlBridge.updateYoutubeDLNow(appContext)
+                    cancelToken.throwIfCancelled()
+                    prepareOutputDir(outputDir)
+                    _progress.update { it + (track.id to "Ponovni poskus zadetka ${candidate.label}...") }
+                    try {
+                        downloadCandidate(track, outputDir, entry, candidate, cancelToken)
+                    } catch (retryError: Throwable) {
+                        if (retryError is DownloadCancelledException || cancelToken.isCancelled) throw retryError
+                        retryError.addSuppressed(firstError)
+                        lastDownloadError = retryError
+                        Log.w("DownloadQueue", "Download candidate ${candidate.label} failed for ${track.id}", retryError)
+                        outputDir.deleteRecursively()
+                        if (index < candidates.lastIndex) {
+                            _progress.update {
+                                it + (track.id to "Zadetek ${candidate.label} ni uspel · poskušam naslednjega")
+                            }
+                            continue
+                        }
+                        throw retryError
                     }
+                } else {
+                    lastDownloadError = firstError
+                    Log.w("DownloadQueue", "Download candidate ${candidate.label} failed for ${track.id}", firstError)
+                    outputDir.deleteRecursively()
+                    if (index < candidates.lastIndex) {
+                        _progress.update {
+                            it + (track.id to "Zadetek ${candidate.label} ni uspel · poskušam naslednjega")
+                        }
+                        continue
+                    }
+                    throw firstError
                 }
             }
 
@@ -399,7 +426,7 @@ object DownloadQueueManager {
                     it + (track.id to "Zadetek ${candidate.label} je tih · poskušam naslednjega")
                 }
                 outputDir.deleteRecursively()
-                return@forEachIndexed
+                continue
             }
 
             if (lastQuietReport != null) {
@@ -408,7 +435,41 @@ object DownloadQueueManager {
             return downloaded
         }
 
+        lastDownloadError?.let { throw it }
         error("Prenos se je končal brez veljavnega zvočnega kandidata.")
+    }
+
+    private fun prepareOutputDir(outputDir: File) {
+        if (outputDir.exists()) {
+            check(outputDir.deleteRecursively()) {
+                "Prejšnjega poskusa prenosa ni bilo mogoče počistiti."
+            }
+        }
+        check(outputDir.mkdirs() || outputDir.isDirectory) {
+            "Could not create output directory: ${outputDir.absolutePath}"
+        }
+    }
+
+    private fun downloadCandidate(
+        track: Track,
+        outputDir: File,
+        entry: QueueEntry,
+        candidate: DownloadCandidate,
+        cancelToken: DownloadCancelToken
+    ): DownloadedMedia {
+        return YoutubeDlBridge.downloadAllowedUrl(
+            context = appContext,
+            url = candidate.url,
+            outputDir = outputDir,
+            subPath = "audio",
+            cancelToken = cancelToken
+        ) { progress, eta ->
+            if (entry.generation == libraryGeneration && !cancelToken.isCancelled) {
+                _progress.update {
+                    it + (track.id to "Zadetek ${candidate.label}: ${progress.toInt()}% · ETA ${eta}s")
+                }
+            }
+        }
     }
 
     private fun downloadCandidates(track: Track): List<DownloadCandidate> {

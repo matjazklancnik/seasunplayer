@@ -85,6 +85,10 @@ object YoutubeDlBridge {
     }
 
     suspend fun updateYoutubeDL(context: Context): String? = withContext(Dispatchers.IO) {
+        updateYoutubeDLNow(context)
+    }
+
+    fun updateYoutubeDLNow(context: Context): String? {
         try {
             init(context)
             Log.d("YoutubeDlBridge", "Checking for yt-dlp updates...")
@@ -92,10 +96,10 @@ object YoutubeDlBridge {
                 YoutubeDL.getInstance().updateYoutubeDL(context)
             }
             Log.d("YoutubeDlBridge", "yt-dlp update result: ${result?.name}")
-            return@withContext result?.name
+            return result?.name
         } catch (e: Exception) {
             Log.e("YoutubeDlBridge", "Failed to update YoutubeDL", e)
-            return@withContext null
+            return null
         }
     }
 
@@ -196,7 +200,6 @@ object YoutubeDlBridge {
             addOption("--add-metadata")
             addOption("-o", outputTemplate)
             addNetworkOptions()
-            addOption("--verbose")
         }
 
         val processId = "download-${UUID.randomUUID()}"
