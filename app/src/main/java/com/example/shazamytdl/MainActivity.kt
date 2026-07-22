@@ -259,6 +259,7 @@ private fun MainScreen(
     var videoPreview by remember { mutableStateOf<YouTubeVideoPreview?>(null) }
     var videoPreviewFullscreen by remember { mutableStateOf(false) }
     var videoPreviewLoadingTrackId by remember { mutableStateOf<String?>(null) }
+    var videoPreviewPositionMs by remember { mutableLongStateOf(0L) }
 
     fun deleteVideoPreview(path: String?) {
         if (path == null) return
@@ -270,11 +271,17 @@ private fun MainScreen(
         }
     }
 
-    fun clearVideoPreview() {
-        val oldPath = videoPreview?.localVideoPath
+    fun clearVideoPreview(syncPlayback: Boolean = true) {
+        val preview = videoPreview
+        val oldPath = preview?.localVideoPath
+        if (syncPlayback && preview != null && playingTrackId == preview.trackId) {
+            playerHolder?.seekTo(videoPreviewPositionMs)
+            playerPositionMs = videoPreviewPositionMs
+        }
         videoPreview = null
         videoPreviewFullscreen = false
         videoPreviewLoadingTrackId = null
+        videoPreviewPositionMs = 0L
         deleteVideoPreview(oldPath)
     }
 
@@ -603,7 +610,7 @@ private fun MainScreen(
     }
     LaunchedEffect(currentTrack?.id) {
         if (currentTrack?.id != videoPreview?.trackId) {
-            clearVideoPreview()
+            clearVideoPreview(syncPlayback = false)
         }
     }
     val playableTracks = remember(visibleTracks) {
@@ -659,10 +666,7 @@ private fun MainScreen(
                         url = "https://www.youtube.com/watch?v=$videoId",
                         outputDir = File(File(context.cacheDir, "video-preview"), track.id)
                     )
-                    YouTubeVideoPreview(
-                        trackId = track.id,
-                        title = track.title,
-                        artist = track.artist,
+                    DownloadedYouTubeVideoPreview(
                         videoId = videoId,
                         localVideoPath = previewFile.absolutePath
                     )
@@ -674,8 +678,18 @@ private fun MainScreen(
             }
 
             videoPreviewLoadingTrackId = null
-            result.onSuccess { preview ->
-                videoPreview = preview
+            result.onSuccess { downloadedPreview ->
+                val startPositionMs = playerHolder?.positionFor(track.id) ?: playerPositionMs
+                playerHolder?.pause()
+                videoPreviewPositionMs = startPositionMs
+                videoPreview = YouTubeVideoPreview(
+                    trackId = track.id,
+                    title = track.title,
+                    artist = track.artist,
+                    videoId = downloadedPreview.videoId,
+                    localVideoPath = downloadedPreview.localVideoPath,
+                    startPositionMs = startPositionMs
+                )
                 videoPreviewFullscreen = false
             }.onFailure { error ->
                 message = "YouTube preview ni uspel: ${DownloadErrorFormatter.userMessage(error)}"
@@ -996,7 +1010,9 @@ private fun MainScreen(
                 Spacer(Modifier.height(8.dp))
                 YouTubeVideoPreviewCard(
                     preview = preview,
+                    playbackPositionMs = videoPreviewPositionMs,
                     isFullscreen = videoPreviewFullscreen,
+                    onPositionChanged = { videoPreviewPositionMs = it },
                     onFullscreen = { videoPreviewFullscreen = true },
                     onExitFullscreen = { videoPreviewFullscreen = false },
                     onClose = { clearVideoPreview() }
@@ -2000,18 +2016,26 @@ private fun String.normalizedForSearch(): String = Normalizer
     .replace(diacriticsRegex, "")
     .lowercase(Locale.ROOT)
 
+private data class DownloadedYouTubeVideoPreview(
+    val videoId: String,
+    val localVideoPath: String
+)
+
 private data class YouTubeVideoPreview(
     val trackId: String,
     val title: String,
     val artist: String,
     val videoId: String,
-    val localVideoPath: String?
+    val localVideoPath: String?,
+    val startPositionMs: Long
 )
 
 @Composable
 private fun YouTubeVideoPreviewCard(
     preview: YouTubeVideoPreview,
+    playbackPositionMs: Long,
     isFullscreen: Boolean,
+    onPositionChanged: (Long) -> Unit,
     onFullscreen: () -> Unit,
     onExitFullscreen: () -> Unit,
     onClose: () -> Unit
@@ -2055,6 +2079,8 @@ private fun YouTubeVideoPreviewCard(
             if (!isFullscreen) {
                 YouTubePreviewPlayer(
                     preview = preview,
+                    playbackPositionMs = playbackPositionMs,
+                    onPositionChanged = onPositionChanged,
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(16f / 9f)
@@ -2068,6 +2094,8 @@ private fun YouTubeVideoPreviewCard(
     if (isFullscreen) {
         YouTubeVideoFullscreenDialog(
             preview = preview,
+            playbackPositionMs = playbackPositionMs,
+            onPositionChanged = onPositionChanged,
             onExitFullscreen = onExitFullscreen,
             onClose = onClose
         )
@@ -2077,6 +2105,8 @@ private fun YouTubeVideoPreviewCard(
 @Composable
 private fun YouTubeVideoFullscreenDialog(
     preview: YouTubeVideoPreview,
+    playbackPositionMs: Long,
+    onPositionChanged: (Long) -> Unit,
     onExitFullscreen: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -2123,6 +2153,8 @@ private fun YouTubeVideoFullscreenDialog(
                 }
                 YouTubePreviewPlayer(
                     preview = preview,
+                    playbackPositionMs = playbackPositionMs,
+                    onPositionChanged = onPositionChanged,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
@@ -2134,10 +2166,20 @@ private fun YouTubeVideoFullscreenDialog(
 }
 
 @Composable
-private fun YouTubePreviewPlayer(preview: YouTubeVideoPreview, modifier: Modifier = Modifier) {
+private fun YouTubePreviewPlayer(
+    preview: YouTubeVideoPreview,
+    playbackPositionMs: Long,
+    onPositionChanged: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val localVideoPath = preview.localVideoPath
     if (localVideoPath != null) {
-        LocalVideoPreviewPlayer(videoPath = localVideoPath, modifier = modifier)
+        LocalVideoPreviewPlayer(
+            videoPath = localVideoPath,
+            initialPositionMs = playbackPositionMs.coerceAtLeast(preview.startPositionMs),
+            onPositionChanged = onPositionChanged,
+            modifier = modifier
+        )
     } else {
         YouTubeWebPlayer(videoId = preview.videoId, modifier = modifier)
     }
@@ -2145,19 +2187,33 @@ private fun YouTubePreviewPlayer(preview: YouTubeVideoPreview, modifier: Modifie
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun LocalVideoPreviewPlayer(videoPath: String, modifier: Modifier = Modifier) {
+private fun LocalVideoPreviewPlayer(
+    videoPath: String,
+    initialPositionMs: Long,
+    onPositionChanged: (Long) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     val videoUri = remember(videoPath) { Uri.fromFile(File(videoPath)) }
     val player = remember(videoPath) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(videoUri))
+            seekTo(initialPositionMs.coerceAtLeast(0L))
             playWhenReady = true
             prepare()
         }
     }
 
+    LaunchedEffect(player) {
+        while (isActive) {
+            onPositionChanged(player.currentPosition.coerceAtLeast(0L))
+            delay(500L)
+        }
+    }
+
     DisposableEffect(player) {
         onDispose {
+            onPositionChanged(player.currentPosition.coerceAtLeast(0L))
             player.release()
         }
     }
