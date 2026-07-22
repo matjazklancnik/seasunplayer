@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
@@ -28,11 +29,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
@@ -102,6 +105,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
@@ -214,6 +218,8 @@ private fun MainScreen(
     onVisualStyleChange: (AppVisualStyle) -> Unit = {}
 ) {
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val scope = rememberCoroutineScope()
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -633,6 +639,9 @@ private fun MainScreen(
     val currentTrack = remember(tracks, playingTrackId) {
         tracks.firstOrNull { it.id == playingTrackId }
     }
+    val activeVideoPreview = currentTrack?.let { activeTrack ->
+        videoPreview?.takeIf { it.trackId == activeTrack.id }
+    }
     LaunchedEffect(currentTrack?.id, playingTrackId, videoPreview?.trackId) {
         val previewTrackId = videoPreview?.trackId ?: return@LaunchedEffect
         val activeTrackId = currentTrack?.id ?: playingTrackId ?: return@LaunchedEffect
@@ -724,6 +733,30 @@ private fun MainScreen(
         }
     }
 
+    fun togglePlaybackFor(activeTrack: Track) {
+        if (videoPreview?.trackId == activeTrack.id) {
+            playerHolder?.pause()
+        } else {
+            activeTrack.localPath?.let { path ->
+                playerHolder?.togglePlayback(
+                    activeTrack.id,
+                    path,
+                    activeTrack.title,
+                    activeTrack.artist,
+                    activeTrack.artworkPath
+                )
+            }
+        }
+    }
+
+    fun seekActiveTrack(activeTrack: Track, positionMs: Long) {
+        playerHolder?.seekTo(positionMs)
+        playerPositionMs = positionMs
+        if (videoPreview?.trackId == activeTrack.id) {
+            videoPreviewPositionMs = positionMs
+        }
+    }
+
     fun enqueueYouTubeResult(
         result: YouTubeSearchResult,
         clearTextSearch: Boolean,
@@ -761,11 +794,36 @@ private fun MainScreen(
             .fillMaxSize()
             .background(appBackgroundBrush(visualStyle))
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 14.dp, vertical = 12.dp)
-        ) {
+        if (isLandscape && currentTrack != null && activeVideoPreview != null) {
+            LandscapeVideoPreviewScreen(
+                track = currentTrack,
+                preview = activeVideoPreview,
+                isPlaying = isPlaying,
+                positionMs = playerPositionMs,
+                durationMs = playerDurationMs,
+                queueIndex = playerQueueIndex,
+                queueSize = playerQueueSize,
+                shuffleEnabled = shuffleEnabled,
+                repeatMode = repeatMode,
+                isFullscreen = videoPreviewFullscreen,
+                onPlayPause = { togglePlaybackFor(currentTrack) },
+                onPrevious = { playerHolder?.skipToPrevious() },
+                onNext = { playerHolder?.skipToNext() },
+                onShuffle = { playerHolder?.toggleShuffle() },
+                onRepeat = { playerHolder?.cycleRepeatMode() },
+                onSeek = { positionMs -> seekActiveTrack(currentTrack, positionMs) },
+                onStop = { playerHolder?.stop() },
+                onPositionChanged = { videoPreviewPositionMs = it },
+                onFullscreen = { videoPreviewFullscreen = true },
+                onExitFullscreen = { videoPreviewFullscreen = false },
+                onClose = { clearVideoPreview() }
+            )
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+            ) {
             ElevatedCard(
                 colors = CardDefaults.elevatedCardColors(
                     containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
@@ -1013,37 +1071,17 @@ private fun MainScreen(
                 queueSize = playerQueueSize,
                 shuffleEnabled = shuffleEnabled,
                 repeatMode = repeatMode,
-                onPlayPause = {
-                    if (videoPreview?.trackId == activeTrack.id) {
-                        playerHolder?.pause()
-                    } else {
-                        activeTrack.localPath?.let { path ->
-                            playerHolder?.togglePlayback(
-                                activeTrack.id,
-                                path,
-                                activeTrack.title,
-                                activeTrack.artist,
-                                activeTrack.artworkPath
-                            )
-                        }
-                    }
-                },
+                onPlayPause = { togglePlaybackFor(activeTrack) },
                 onPrevious = { playerHolder?.skipToPrevious() },
                 onNext = { playerHolder?.skipToNext() },
                 onShuffle = { playerHolder?.toggleShuffle() },
                 onRepeat = { playerHolder?.cycleRepeatMode() },
-                onSeek = { positionMs ->
-                    playerHolder?.seekTo(positionMs)
-                    playerPositionMs = positionMs
-                    if (videoPreview?.trackId == activeTrack.id) {
-                        videoPreviewPositionMs = positionMs
-                    }
-                },
+                onSeek = { positionMs -> seekActiveTrack(activeTrack, positionMs) },
                 onStop = { playerHolder?.stop() },
                 onArtworkClick = { openVideoPreview(activeTrack) },
                 isVideoPreviewLoading = videoPreviewLoadingTrackId == activeTrack.id
             )
-            videoPreview?.takeIf { it.trackId == activeTrack.id }?.let { preview ->
+            activeVideoPreview?.let { preview ->
                 Spacer(Modifier.height(8.dp))
                 YouTubeVideoPreviewCard(
                     preview = preview,
@@ -1160,6 +1198,7 @@ private fun MainScreen(
                     )
                 }
             }
+        }
         }
     }
     }
@@ -2100,6 +2139,281 @@ private val YouTubeVideoPreviewSaver = Saver<YouTubeVideoPreview?, String>(
         }
     }
 )
+
+@Composable
+private fun LandscapeVideoPreviewScreen(
+    track: Track,
+    preview: YouTubeVideoPreview,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    queueIndex: Int,
+    queueSize: Int,
+    shuffleEnabled: Boolean,
+    repeatMode: Int,
+    isFullscreen: Boolean,
+    onPlayPause: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onShuffle: () -> Unit,
+    onRepeat: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onStop: () -> Unit,
+    onPositionChanged: (Long) -> Unit,
+    onFullscreen: () -> Unit,
+    onExitFullscreen: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ElevatedCard(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+            colors = CardDefaults.elevatedCardColors(
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                contentColor = MaterialTheme.colorScheme.onSurface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            preview.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            preview.artist,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(onClick = onFullscreen) {
+                        Icon(Icons.Default.Fullscreen, contentDescription = "Povečaj video")
+                    }
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Default.Close, contentDescription = "Zapri video")
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                if (!isFullscreen) {
+                    YouTubePreviewPlayer(
+                        preview = preview,
+                        playbackPositionMs = positionMs,
+                        onPositionChanged = onPositionChanged,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.Black)
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.Black)
+                    )
+                }
+            }
+        }
+
+        LandscapeNowPlayingCard(
+            track = track,
+            isPlaying = isPlaying,
+            positionMs = positionMs,
+            durationMs = durationMs,
+            queueIndex = queueIndex,
+            queueSize = queueSize,
+            shuffleEnabled = shuffleEnabled,
+            repeatMode = repeatMode,
+            onPlayPause = onPlayPause,
+            onPrevious = onPrevious,
+            onNext = onNext,
+            onShuffle = onShuffle,
+            onRepeat = onRepeat,
+            onSeek = onSeek,
+            onStop = onStop,
+            modifier = Modifier
+                .fillMaxHeight()
+                .widthIn(min = 244.dp, max = 310.dp)
+        )
+    }
+
+    if (isFullscreen) {
+        YouTubeVideoFullscreenDialog(
+            preview = preview,
+            playbackPositionMs = positionMs,
+            onPositionChanged = onPositionChanged,
+            onExitFullscreen = onExitFullscreen,
+            onClose = onClose
+        )
+    }
+}
+
+@Composable
+private fun LandscapeNowPlayingCard(
+    track: Track,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    queueIndex: Int,
+    queueSize: Int,
+    shuffleEnabled: Boolean,
+    repeatMode: Int,
+    onPlayPause: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onShuffle: () -> Unit,
+    onRepeat: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onStop: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var draggedPositionMs by remember(track.id) { mutableStateOf<Long?>(null) }
+    val shownPosition = draggedPositionMs ?: positionMs
+    val safeDuration = durationMs.coerceAtLeast(1L)
+
+    ElevatedCard(
+        modifier = modifier,
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+            contentColor = MaterialTheme.colorScheme.onSurface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TrackArtwork(
+                    path = track.artworkPath,
+                    size = 42,
+                    onClick = null,
+                    showVideoBadge = true,
+                    isLoading = false
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        track.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        track.artist,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (queueSize > 0) {
+                    Text(
+                        "${queueIndex + 1}/$queueSize",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            Slider(
+                value = shownPosition.coerceIn(0L, safeDuration).toFloat(),
+                onValueChange = { draggedPositionMs = it.toLong() },
+                onValueChangeFinished = {
+                    draggedPositionMs?.let(onSeek)
+                    draggedPositionMs = null
+                },
+                valueRange = 0f..safeDuration.toFloat(),
+                enabled = durationMs > 0,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(formatTime(shownPosition), style = MaterialTheme.typography.labelSmall)
+                Text(formatTime(durationMs), style = MaterialTheme.typography.labelSmall)
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onShuffle, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.Shuffle,
+                        contentDescription = "Naključno predvajanje",
+                        tint = if (shuffleEnabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                IconButton(onClick = onPrevious, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.SkipPrevious, contentDescription = "Prejšnja")
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(42.dp)
+                ) {
+                    IconButton(onClick = onPlayPause) {
+                        Icon(
+                            if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Pavza" else "Predvajaj",
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
+                IconButton(onClick = onNext, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.SkipNext, contentDescription = "Naslednja")
+                }
+                IconButton(onClick = onRepeat, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        if (repeatMode == Player.REPEAT_MODE_ONE) {
+                            Icons.Default.RepeatOne
+                        } else {
+                            Icons.Default.Repeat
+                        },
+                        contentDescription = "Ponavljanje",
+                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                IconButton(onClick = onStop, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.Stop, contentDescription = "Ustavi")
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun YouTubeVideoPreviewCard(
