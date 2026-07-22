@@ -1001,7 +1001,13 @@ private fun MainScreen(
                 onNext = { playerHolder?.skipToNext() },
                 onShuffle = { playerHolder?.toggleShuffle() },
                 onRepeat = { playerHolder?.cycleRepeatMode() },
-                onSeek = { playerHolder?.seekTo(it) },
+                onSeek = { positionMs ->
+                    playerHolder?.seekTo(positionMs)
+                    playerPositionMs = positionMs
+                    if (videoPreview?.trackId == activeTrack.id) {
+                        videoPreviewPositionMs = positionMs
+                    }
+                },
                 onStop = { playerHolder?.stop() },
                 onArtworkClick = { openVideoPreview(activeTrack) },
                 isVideoPreviewLoading = videoPreviewLoadingTrackId == activeTrack.id
@@ -2176,7 +2182,7 @@ private fun YouTubePreviewPlayer(
     if (localVideoPath != null) {
         LocalVideoPreviewPlayer(
             videoPath = localVideoPath,
-            initialPositionMs = playbackPositionMs.coerceAtLeast(preview.startPositionMs),
+            initialPositionMs = playbackPositionMs,
             onPositionChanged = onPositionChanged,
             modifier = modifier
         )
@@ -2201,6 +2207,13 @@ private fun LocalVideoPreviewPlayer(
             seekTo(initialPositionMs.coerceAtLeast(0L))
             playWhenReady = true
             prepare()
+        }
+    }
+
+    LaunchedEffect(player, initialPositionMs) {
+        val targetPositionMs = initialPositionMs.coerceAtLeast(0L)
+        if (kotlin.math.abs(player.currentPosition - targetPositionMs) > SEEK_SYNC_THRESHOLD_MS) {
+            player.seekTo(targetPositionMs)
         }
     }
 
@@ -2498,6 +2511,7 @@ private fun youtubeEmbedHtml(videoId: String): String {
 }
 
 private val youtubeVideoIdRegex = Regex("^[A-Za-z0-9_-]{11}$")
+private const val SEEK_SYNC_THRESHOLD_MS = 1_000L
 
 private fun formatTime(milliseconds: Long): String {
     val totalSeconds = milliseconds.coerceAtLeast(0L) / 1_000L
