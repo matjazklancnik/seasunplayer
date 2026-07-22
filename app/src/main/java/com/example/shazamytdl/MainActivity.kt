@@ -283,6 +283,7 @@ private fun MainScreen(
     var videoPreviewFullscreen by rememberSaveable { mutableStateOf(false) }
     var videoPreviewLoadingTrackId by remember { mutableStateOf<String?>(null) }
     var videoPreviewPositionMs by rememberSaveable { mutableStateOf(0L) }
+    var videoPreviewIsPlaying by rememberSaveable { mutableStateOf(false) }
 
     fun deleteVideoPreview(path: String?) {
         if (path == null) return
@@ -312,6 +313,7 @@ private fun MainScreen(
         videoPreviewFullscreen = false
         videoPreviewLoadingTrackId = null
         videoPreviewPositionMs = 0L
+        videoPreviewIsPlaying = false
         if (shouldResumePlayback) {
             playerHolder?.play()
             isPlaying = true
@@ -729,6 +731,7 @@ private fun MainScreen(
                 val startPositionMs = playerHolder?.positionFor(track.id) ?: playerPositionMs
                 playerHolder?.pause()
                 videoPreviewPositionMs = startPositionMs
+                videoPreviewIsPlaying = true
                 videoPreview = YouTubeVideoPreview(
                     trackId = track.id,
                     title = track.title,
@@ -809,7 +812,7 @@ private fun MainScreen(
             LandscapeVideoPreviewScreen(
                 track = currentTrack,
                 preview = activeVideoPreview,
-                isPlaying = isPlaying,
+                isPlaying = videoPreviewIsPlaying,
                 positionMs = playerPositionMs,
                 durationMs = playerDurationMs,
                 queueIndex = playerQueueIndex,
@@ -817,13 +820,16 @@ private fun MainScreen(
                 shuffleEnabled = shuffleEnabled,
                 repeatMode = repeatMode,
                 isFullscreen = videoPreviewFullscreen,
-                onPlayPause = { togglePlaybackFor(currentTrack) },
+                onVideoPlayPause = { videoPreviewIsPlaying = !videoPreviewIsPlaying },
                 onPrevious = { playerHolder?.skipToPrevious() },
                 onNext = { playerHolder?.skipToNext() },
                 onShuffle = { playerHolder?.toggleShuffle() },
                 onRepeat = { playerHolder?.cycleRepeatMode() },
                 onSeek = { positionMs -> seekActiveTrack(currentTrack, positionMs) },
-                onStop = { playerHolder?.stop() },
+                onStop = {
+                    clearVideoPreview(syncPlayback = false)
+                    playerHolder?.stop()
+                },
                 onPositionChanged = { videoPreviewPositionMs = it },
                 onFullscreen = { videoPreviewFullscreen = true },
                 onExitFullscreen = { videoPreviewFullscreen = false },
@@ -1073,35 +1079,53 @@ private fun MainScreen(
         }
 
         currentTrack?.let { activeTrack ->
-            NowPlayingCard(
-                track = activeTrack,
-                isPlaying = isPlaying,
-                positionMs = playerPositionMs,
-                durationMs = playerDurationMs,
-                queueIndex = playerQueueIndex,
-                queueSize = playerQueueSize,
-                shuffleEnabled = shuffleEnabled,
-                repeatMode = repeatMode,
-                onPlayPause = { togglePlaybackFor(activeTrack) },
-                onPrevious = { playerHolder?.skipToPrevious() },
-                onNext = { playerHolder?.skipToNext() },
-                onShuffle = { playerHolder?.toggleShuffle() },
-                onRepeat = { playerHolder?.cycleRepeatMode() },
-                onSeek = { positionMs -> seekActiveTrack(activeTrack, positionMs) },
-                onStop = { playerHolder?.stop() },
-                onArtworkClick = { openVideoPreview(activeTrack) },
-                isVideoPreviewLoading = videoPreviewLoadingTrackId == activeTrack.id
-            )
-            activeVideoPreview?.let { preview ->
-                Spacer(Modifier.height(8.dp))
-                YouTubeVideoPreviewCard(
+            val preview = activeVideoPreview
+            if (preview != null) {
+                NowPlayingVideoPreviewCard(
+                    track = activeTrack,
                     preview = preview,
-                    playbackPositionMs = videoPreviewPositionMs,
+                    isVideoPlaying = videoPreviewIsPlaying,
+                    positionMs = playerPositionMs,
+                    durationMs = playerDurationMs,
+                    queueIndex = playerQueueIndex,
+                    queueSize = playerQueueSize,
+                    shuffleEnabled = shuffleEnabled,
+                    repeatMode = repeatMode,
                     isFullscreen = videoPreviewFullscreen,
+                    onVideoPlayPause = { videoPreviewIsPlaying = !videoPreviewIsPlaying },
+                    onPrevious = { playerHolder?.skipToPrevious() },
+                    onNext = { playerHolder?.skipToNext() },
+                    onShuffle = { playerHolder?.toggleShuffle() },
+                    onRepeat = { playerHolder?.cycleRepeatMode() },
+                    onSeek = { positionMs -> seekActiveTrack(activeTrack, positionMs) },
+                    onStop = {
+                        clearVideoPreview(syncPlayback = false)
+                        playerHolder?.stop()
+                    },
                     onPositionChanged = { videoPreviewPositionMs = it },
                     onFullscreen = { videoPreviewFullscreen = true },
                     onExitFullscreen = { videoPreviewFullscreen = false },
                     onClose = { clearVideoPreview(resumePlayback = true) }
+                )
+            } else {
+                NowPlayingCard(
+                    track = activeTrack,
+                    isPlaying = isPlaying,
+                    positionMs = playerPositionMs,
+                    durationMs = playerDurationMs,
+                    queueIndex = playerQueueIndex,
+                    queueSize = playerQueueSize,
+                    shuffleEnabled = shuffleEnabled,
+                    repeatMode = repeatMode,
+                    onPlayPause = { togglePlaybackFor(activeTrack) },
+                    onPrevious = { playerHolder?.skipToPrevious() },
+                    onNext = { playerHolder?.skipToNext() },
+                    onShuffle = { playerHolder?.toggleShuffle() },
+                    onRepeat = { playerHolder?.cycleRepeatMode() },
+                    onSeek = { positionMs -> seekActiveTrack(activeTrack, positionMs) },
+                    onStop = { playerHolder?.stop() },
+                    onArtworkClick = { openVideoPreview(activeTrack) },
+                    isVideoPreviewLoading = videoPreviewLoadingTrackId == activeTrack.id
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -1906,6 +1930,188 @@ private fun NowPlayingCard(
 }
 
 @Composable
+private fun NowPlayingVideoPreviewCard(
+    track: Track,
+    preview: YouTubeVideoPreview,
+    isVideoPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    queueIndex: Int,
+    queueSize: Int,
+    shuffleEnabled: Boolean,
+    repeatMode: Int,
+    isFullscreen: Boolean,
+    onVideoPlayPause: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onShuffle: () -> Unit,
+    onRepeat: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onStop: () -> Unit,
+    onPositionChanged: (Long) -> Unit,
+    onFullscreen: () -> Unit,
+    onExitFullscreen: () -> Unit,
+    onClose: () -> Unit
+) {
+    var draggedPositionMs by remember(track.id, preview.videoId) { mutableStateOf<Long?>(null) }
+    val shownPosition = draggedPositionMs ?: positionMs
+    val safeDuration = durationMs.coerceAtLeast(1L)
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+            contentColor = MaterialTheme.colorScheme.onSurface
+        )
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TrackArtwork(
+                    path = track.artworkPath,
+                    size = 44,
+                    onClick = null,
+                    showVideoBadge = true,
+                    isLoading = false
+                )
+                Spacer(Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        track.title,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        track.artist,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (queueSize > 0) {
+                    Text(
+                        "${queueIndex + 1}/$queueSize",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(4.dp))
+                }
+                IconButton(onClick = onFullscreen) {
+                    Icon(Icons.Default.Fullscreen, contentDescription = "Povečaj video")
+                }
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Default.Close, contentDescription = "Zapri video")
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            if (!isFullscreen) {
+                YouTubePreviewPlayer(
+                    preview = preview,
+                    playbackPositionMs = positionMs,
+                    onPositionChanged = onPositionChanged,
+                    showControls = false,
+                    playWhenReady = isVideoPlaying,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black)
+                )
+            }
+
+            Slider(
+                value = shownPosition.coerceIn(0L, safeDuration).toFloat(),
+                onValueChange = { draggedPositionMs = it.toLong() },
+                onValueChangeFinished = {
+                    draggedPositionMs?.let(onSeek)
+                    draggedPositionMs = null
+                },
+                valueRange = 0f..safeDuration.toFloat(),
+                enabled = durationMs > 0,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(formatTime(shownPosition), style = MaterialTheme.typography.labelSmall)
+                Text(formatTime(durationMs), style = MaterialTheme.typography.labelSmall)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onShuffle) {
+                    Icon(
+                        Icons.Default.Shuffle,
+                        contentDescription = "Naključno predvajanje",
+                        tint = if (shuffleEnabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                IconButton(onClick = onPrevious) {
+                    Icon(Icons.Default.SkipPrevious, contentDescription = "Prejšnja")
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(50.dp)
+                ) {
+                    IconButton(onClick = onVideoPlayPause) {
+                        Icon(
+                            if (isVideoPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isVideoPlaying) {
+                                "Pavza previewja"
+                            } else {
+                                "Predvajaj preview"
+                            },
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
+                IconButton(onClick = onNext) {
+                    Icon(Icons.Default.SkipNext, contentDescription = "Naslednja")
+                }
+                IconButton(onClick = onRepeat) {
+                    Icon(
+                        if (repeatMode == Player.REPEAT_MODE_ONE) {
+                            Icons.Default.RepeatOne
+                        } else {
+                            Icons.Default.Repeat
+                        },
+                        contentDescription = "Ponavljanje",
+                        tint = if (repeatMode != Player.REPEAT_MODE_OFF) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                IconButton(onClick = onStop) {
+                    Icon(Icons.Default.Stop, contentDescription = "Ustavi")
+                }
+            }
+        }
+    }
+
+    if (isFullscreen) {
+        YouTubeVideoFullscreenDialog(
+            preview = preview,
+            playbackPositionMs = positionMs,
+            onPositionChanged = onPositionChanged,
+            playWhenReady = isVideoPlaying,
+            onExitFullscreen = onExitFullscreen,
+            onClose = onClose
+        )
+    }
+}
+
+@Composable
 private fun EmptyState() {
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -2163,7 +2369,7 @@ private fun LandscapeVideoPreviewScreen(
     shuffleEnabled: Boolean,
     repeatMode: Int,
     isFullscreen: Boolean,
-    onPlayPause: () -> Unit,
+    onVideoPlayPause: () -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onShuffle: () -> Unit,
@@ -2191,58 +2397,47 @@ private fun LandscapeVideoPreviewScreen(
                 contentColor = MaterialTheme.colorScheme.onSurface
             )
         ) {
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(8.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            preview.title,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            preview.artist,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    IconButton(onClick = onFullscreen) {
-                        Icon(Icons.Default.Fullscreen, contentDescription = "Povečaj video")
-                    }
-                    IconButton(onClick = onClose) {
-                        Icon(Icons.Default.Close, contentDescription = "Zapri video")
-                    }
-                }
-                Spacer(Modifier.height(4.dp))
                 if (!isFullscreen) {
                     YouTubePreviewPlayer(
                         preview = preview,
                         playbackPositionMs = positionMs,
                         onPositionChanged = onPositionChanged,
+                        showControls = false,
+                        playWhenReady = isPlaying,
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
+                            .fillMaxSize()
                             .clip(RoundedCornerShape(8.dp))
                             .background(Color.Black)
                     )
                 } else {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
+                            .fillMaxSize()
                             .clip(RoundedCornerShape(8.dp))
                             .background(Color.Black)
                     )
+                }
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color.Black.copy(alpha = 0.56f),
+                    contentColor = Color.White
+                ) {
+                    Row {
+                        IconButton(onClick = onFullscreen, modifier = Modifier.size(38.dp)) {
+                            Icon(Icons.Default.Fullscreen, contentDescription = "Povečaj video")
+                        }
+                        IconButton(onClick = onClose, modifier = Modifier.size(38.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Zapri video")
+                        }
+                    }
                 }
             }
         }
@@ -2256,7 +2451,7 @@ private fun LandscapeVideoPreviewScreen(
             queueSize = queueSize,
             shuffleEnabled = shuffleEnabled,
             repeatMode = repeatMode,
-            onPlayPause = onPlayPause,
+            onPlayPause = onVideoPlayPause,
             onPrevious = onPrevious,
             onNext = onNext,
             onShuffle = onShuffle,
@@ -2274,6 +2469,7 @@ private fun LandscapeVideoPreviewScreen(
             preview = preview,
             playbackPositionMs = positionMs,
             onPositionChanged = onPositionChanged,
+            playWhenReady = isPlaying,
             onExitFullscreen = onExitFullscreen,
             onClose = onClose
         )
@@ -2427,82 +2623,11 @@ private fun LandscapeNowPlayingCard(
 }
 
 @Composable
-private fun YouTubeVideoPreviewCard(
-    preview: YouTubeVideoPreview,
-    playbackPositionMs: Long,
-    isFullscreen: Boolean,
-    onPositionChanged: (Long) -> Unit,
-    onFullscreen: () -> Unit,
-    onExitFullscreen: () -> Unit,
-    onClose: () -> Unit
-) {
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-            contentColor = MaterialTheme.colorScheme.onSurface
-        )
-    ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        preview.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        preview.artist,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                IconButton(onClick = onFullscreen) {
-                    Icon(Icons.Default.Fullscreen, contentDescription = "Povečaj video")
-                }
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Default.Close, contentDescription = "Zapri video")
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-            if (!isFullscreen) {
-                YouTubePreviewPlayer(
-                    preview = preview,
-                    playbackPositionMs = playbackPositionMs,
-                    onPositionChanged = onPositionChanged,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.Black)
-                )
-            }
-        }
-    }
-
-    if (isFullscreen) {
-        YouTubeVideoFullscreenDialog(
-            preview = preview,
-            playbackPositionMs = playbackPositionMs,
-            onPositionChanged = onPositionChanged,
-            onExitFullscreen = onExitFullscreen,
-            onClose = onClose
-        )
-    }
-}
-
-@Composable
 private fun YouTubeVideoFullscreenDialog(
     preview: YouTubeVideoPreview,
     playbackPositionMs: Long,
     onPositionChanged: (Long) -> Unit,
+    playWhenReady: Boolean = true,
     onExitFullscreen: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -2551,6 +2676,8 @@ private fun YouTubeVideoFullscreenDialog(
                     preview = preview,
                     playbackPositionMs = playbackPositionMs,
                     onPositionChanged = onPositionChanged,
+                    showControls = true,
+                    playWhenReady = playWhenReady,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
@@ -2566,6 +2693,8 @@ private fun YouTubePreviewPlayer(
     preview: YouTubeVideoPreview,
     playbackPositionMs: Long,
     onPositionChanged: (Long) -> Unit,
+    showControls: Boolean,
+    playWhenReady: Boolean,
     modifier: Modifier = Modifier
 ) {
     val localVideoPath = preview.localVideoPath
@@ -2574,10 +2703,16 @@ private fun YouTubePreviewPlayer(
             videoPath = localVideoPath,
             initialPositionMs = playbackPositionMs,
             onPositionChanged = onPositionChanged,
+            showControls = showControls,
+            playWhenReady = playWhenReady,
             modifier = modifier
         )
     } else {
-        YouTubeWebPlayer(videoId = preview.videoId, modifier = modifier)
+        YouTubeWebPlayer(
+            videoId = preview.videoId,
+            showControls = showControls,
+            modifier = modifier
+        )
     }
 }
 
@@ -2587,6 +2722,8 @@ private fun LocalVideoPreviewPlayer(
     videoPath: String,
     initialPositionMs: Long,
     onPositionChanged: (Long) -> Unit,
+    showControls: Boolean,
+    playWhenReady: Boolean,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -2595,8 +2732,17 @@ private fun LocalVideoPreviewPlayer(
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(videoUri))
             seekTo(initialPositionMs.coerceAtLeast(0L))
-            playWhenReady = true
+            this.playWhenReady = playWhenReady
             prepare()
+        }
+    }
+
+    LaunchedEffect(player, playWhenReady) {
+        player.playWhenReady = playWhenReady
+        if (playWhenReady) {
+            player.play()
+        } else {
+            player.pause()
         }
     }
 
@@ -2625,23 +2771,28 @@ private fun LocalVideoPreviewPlayer(
         factory = { viewContext ->
             PlayerView(viewContext).apply {
                 setBackgroundColor(android.graphics.Color.BLACK)
-                useController = true
+                useController = showControls
                 this.player = player
             }
         },
         modifier = modifier,
         update = { view ->
             if (view.player !== player) view.player = player
+            view.useController = showControls
         }
     )
 }
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun YouTubeWebPlayer(videoId: String, modifier: Modifier = Modifier) {
+private fun YouTubeWebPlayer(
+    videoId: String,
+    showControls: Boolean,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
-    val html = remember(videoId) { youtubeEmbedHtml(videoId) }
-    val webView = remember(videoId) {
+    val html = remember(videoId, showControls) { youtubeEmbedHtml(videoId, showControls) }
+    val webView = remember(videoId, showControls) {
         WebView(context).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2864,8 +3015,9 @@ private fun normalizedYouTubeVideoId(value: String?): String? = value
     ?.trim()
     ?.takeIf { youtubeVideoIdRegex.matches(it) }
 
-private fun youtubeEmbedHtml(videoId: String): String {
+private fun youtubeEmbedHtml(videoId: String, showControls: Boolean): String {
     val safeVideoId = normalizedYouTubeVideoId(videoId) ?: return ""
+    val controls = if (showControls) 1 else 0
     return """
         <!doctype html>
         <html>
@@ -2891,7 +3043,7 @@ private fun youtubeEmbedHtml(videoId: String): String {
         </head>
         <body>
             <iframe
-                src="https://www.youtube.com/embed/$safeVideoId?playsinline=1&controls=1&rel=0&enablejsapi=1&origin=https%3A%2F%2Fwww.youtube.com"
+                src="https://www.youtube.com/embed/$safeVideoId?playsinline=1&controls=$controls&rel=0&enablejsapi=1&origin=https%3A%2F%2Fwww.youtube.com"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                 allowfullscreen>
             </iframe>
