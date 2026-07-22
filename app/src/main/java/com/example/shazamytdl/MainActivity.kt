@@ -127,6 +127,7 @@ import com.example.shazamytdl.download.DownloadQueueManager
 import com.example.shazamytdl.download.YoutubeDlBridge
 import com.example.shazamytdl.download.YouTubeSearchResult
 import com.example.shazamytdl.importer.ShazamCsvImporter
+import com.example.shazamytdl.player.PlaybackService
 import com.example.shazamytdl.player.PlayerHolder
 import com.example.shazamytdl.recognition.AudioSampleRecorder
 import com.example.shazamytdl.recognition.SongRecognitionClient
@@ -154,9 +155,12 @@ import java.text.Normalizer
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+    private val playerHolder: PlayerHolder
+        get() = (application as ShazamYtdlApp).playerHolder
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val playerHolder = (application as ShazamYtdlApp).playerHolder
+        val appPlayerHolder = playerHolder
         setContent {
             val appearancePreferences = remember {
                 getSharedPreferences("appearance", Context.MODE_PRIVATE)
@@ -175,7 +179,7 @@ class MainActivity : ComponentActivity() {
                     contentColor = MaterialTheme.colorScheme.onBackground
                 ) {
                     MainScreen(
-                        playerHolder = playerHolder,
+                        playerHolder = appPlayerHolder,
                         visualStyle = visualStyle,
                         onVisualStyleChange = { selected ->
                             visualStyle = selected
@@ -187,6 +191,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        if (isFinishing && !isChangingConfigurations) {
+            playerHolder.stop()
+            stopService(Intent(this, PlaybackService::class.java))
+        }
+        super.onDestroy()
     }
 }
 
