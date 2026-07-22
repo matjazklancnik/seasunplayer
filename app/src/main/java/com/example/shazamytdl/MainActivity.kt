@@ -294,9 +294,16 @@ private fun MainScreen(
         }
     }
 
-    fun clearVideoPreview(syncPlayback: Boolean = true) {
+    fun clearVideoPreview(
+        syncPlayback: Boolean = true,
+        resumePlayback: Boolean = false
+    ) {
         val preview = videoPreview
         val oldPath = preview?.localVideoPath
+        val shouldResumePlayback = resumePlayback &&
+            syncPlayback &&
+            preview != null &&
+            playingTrackId == preview.trackId
         if (syncPlayback && preview != null && playingTrackId == preview.trackId) {
             playerHolder?.seekTo(videoPreviewPositionMs)
             playerPositionMs = videoPreviewPositionMs
@@ -305,6 +312,10 @@ private fun MainScreen(
         videoPreviewFullscreen = false
         videoPreviewLoadingTrackId = null
         videoPreviewPositionMs = 0L
+        if (shouldResumePlayback) {
+            playerHolder?.play()
+            isPlaying = true
+        }
         deleteVideoPreview(oldPath)
     }
 
@@ -816,7 +827,7 @@ private fun MainScreen(
                 onPositionChanged = { videoPreviewPositionMs = it },
                 onFullscreen = { videoPreviewFullscreen = true },
                 onExitFullscreen = { videoPreviewFullscreen = false },
-                onClose = { clearVideoPreview() }
+                onClose = { clearVideoPreview(resumePlayback = true) }
             )
         } else {
             Column(
@@ -1090,7 +1101,7 @@ private fun MainScreen(
                     onPositionChanged = { videoPreviewPositionMs = it },
                     onFullscreen = { videoPreviewFullscreen = true },
                     onExitFullscreen = { videoPreviewFullscreen = false },
-                    onClose = { clearVideoPreview() }
+                    onClose = { clearVideoPreview(resumePlayback = true) }
                 )
             }
             Spacer(Modifier.height(8.dp))

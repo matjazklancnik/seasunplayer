@@ -171,6 +171,16 @@ class PlayerHolder(context: Context) {
         }
     }
 
+    fun play() {
+        withController { player ->
+            if (player.mediaItemCount == 0) return@withController
+            if (player.playbackState == Player.STATE_ENDED) player.seekTo(0L)
+            player.play()
+            persistPlayerState(player)
+            updateCurrentTrack(player)
+        }
+    }
+
     fun stop() {
         withController { player ->
             player.currentMediaItem?.mediaId?.let { positionsByTrack[it] = 0L }
