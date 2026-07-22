@@ -91,6 +91,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -150,6 +152,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.text.Normalizer
 import java.util.Locale
@@ -268,10 +271,12 @@ private fun MainScreen(
     var isSongRecognitionSearchLoading by remember { mutableStateOf(false) }
     var songRecognitionSearchCompleted by remember { mutableStateOf(false) }
     var songRecognitionSearchError by remember { mutableStateOf<String?>(null) }
-    var videoPreview by remember { mutableStateOf<YouTubeVideoPreview?>(null) }
-    var videoPreviewFullscreen by remember { mutableStateOf(false) }
+    var videoPreview by rememberSaveable(stateSaver = YouTubeVideoPreviewSaver) {
+        mutableStateOf<YouTubeVideoPreview?>(null)
+    }
+    var videoPreviewFullscreen by rememberSaveable { mutableStateOf(false) }
     var videoPreviewLoadingTrackId by remember { mutableStateOf<String?>(null) }
-    var videoPreviewPositionMs by remember { mutableLongStateOf(0L) }
+    var videoPreviewPositionMs by rememberSaveable { mutableStateOf(0L) }
 
     fun deleteVideoPreview(path: String?) {
         if (path == null) return
@@ -465,12 +470,20 @@ private fun MainScreen(
         }
     }
 
-    LaunchedEffect(playerHolder) {
+    LaunchedEffect(playerHolder, videoPreview?.trackId) {
         while (isActive) {
             playerHolder?.let { holder ->
-                playingTrackId = holder.currentTrackId.value
-                isPlaying = holder.isPlaying
-                playerPositionMs = holder.currentPosition
+                val currentId = holder.currentTrackId.value
+                val activePreview = videoPreview?.takeIf { it.trackId == currentId }
+                playingTrackId = currentId
+                if (activePreview != null) {
+                    if (holder.isPlaying) holder.pause()
+                    isPlaying = false
+                    playerPositionMs = videoPreviewPositionMs
+                } else {
+                    isPlaying = holder.isPlaying
+                    playerPositionMs = holder.currentPosition
+                }
                 playerDurationMs = holder.duration
                 playerQueueIndex = holder.queueIndex
                 playerQueueSize = holder.queueSize
@@ -620,8 +633,10 @@ private fun MainScreen(
     val currentTrack = remember(tracks, playingTrackId) {
         tracks.firstOrNull { it.id == playingTrackId }
     }
-    LaunchedEffect(currentTrack?.id) {
-        if (currentTrack?.id != videoPreview?.trackId) {
+    LaunchedEffect(currentTrack?.id, playingTrackId, videoPreview?.trackId) {
+        val previewTrackId = videoPreview?.trackId ?: return@LaunchedEffect
+        val activeTrackId = currentTrack?.id ?: playingTrackId ?: return@LaunchedEffect
+        if (activeTrackId != previewTrackId) {
             clearVideoPreview(syncPlayback = false)
         }
     }
@@ -999,14 +1014,18 @@ private fun MainScreen(
                 shuffleEnabled = shuffleEnabled,
                 repeatMode = repeatMode,
                 onPlayPause = {
-                    activeTrack.localPath?.let { path ->
-                        playerHolder?.togglePlayback(
-                            activeTrack.id,
-                            path,
-                            activeTrack.title,
-                            activeTrack.artist,
-                            activeTrack.artworkPath
-                        )
+                    if (videoPreview?.trackId == activeTrack.id) {
+                        playerHolder?.pause()
+                    } else {
+                        activeTrack.localPath?.let { path ->
+                            playerHolder?.togglePlayback(
+                                activeTrack.id,
+                                path,
+                                activeTrack.title,
+                                activeTrack.artist,
+                                activeTrack.artworkPath
+                            )
+                        }
                     }
                 },
                 onPrevious = { playerHolder?.skipToPrevious() },
@@ -2046,6 +2065,40 @@ private data class YouTubeVideoPreview(
     val videoId: String,
     val localVideoPath: String?,
     val startPositionMs: Long
+)
+
+private val YouTubeVideoPreviewSaver = Saver<YouTubeVideoPreview?, String>(
+    save = { preview ->
+        if (preview == null) {
+            ""
+        } else {
+            JSONObject()
+                .put("trackId", preview.trackId)
+                .put("title", preview.title)
+                .put("artist", preview.artist)
+                .put("videoId", preview.videoId)
+                .put("localVideoPath", preview.localVideoPath.orEmpty())
+                .put("startPositionMs", preview.startPositionMs)
+                .toString()
+        }
+    },
+    restore = { encoded ->
+        if (encoded.isBlank()) {
+            null
+        } else {
+            runCatching {
+                val json = JSONObject(encoded)
+                YouTubeVideoPreview(
+                    trackId = json.getString("trackId"),
+                    title = json.getString("title"),
+                    artist = json.getString("artist"),
+                    videoId = json.getString("videoId"),
+                    localVideoPath = json.optString("localVideoPath").takeIf(String::isNotBlank),
+                    startPositionMs = json.optLong("startPositionMs", 0L)
+                )
+            }.getOrNull()
+        }
+    }
 )
 
 @Composable
