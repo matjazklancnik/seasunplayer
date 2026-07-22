@@ -1,6 +1,7 @@
 package com.example.shazamytdl.download
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.util.Log
 import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
@@ -370,10 +371,35 @@ object YoutubeDlBridge {
         }
         executionError?.let { throw it }
 
-        return outputDir.listFiles()
+        val previewFile = outputDir.listFiles()
             ?.filter { it.isFile && it.length() > 0L && it.extension.lowercase() in VIDEO_EXTENSIONS }
             ?.maxByOrNull { it.lastModified() }
             ?: error("Video preview ni bil prenesen.")
+        check(previewFile.hasVideoTrack()) {
+            "Preneseni preview ne vsebuje video slike. Poskušam drug YouTube format."
+        }
+        return previewFile
+    }
+
+    private fun File.hasVideoTrack(): Boolean {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(absolutePath)
+            val width = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?.toIntOrNull()
+                ?: 0
+            val height = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull()
+                ?: 0
+            width > 0 && height > 0
+        } catch (error: Throwable) {
+            Log.w("YoutubeDlBridge", "Could not inspect preview video track for $absolutePath", error)
+            false
+        } finally {
+            retriever.release()
+        }
     }
 
     private fun YoutubeDLRequest.addNetworkOptions() {
@@ -390,7 +416,7 @@ object YoutubeDlBridge {
 
     private val VIDEO_EXTENSIONS = setOf("mp4", "m4v")
     private const val PREVIEW_VIDEO_FORMAT =
-        "18/134+140/135+140/22/best[height<=360][ext=mp4][acodec!=none]/best[height<=480][ext=mp4][acodec!=none]"
+        "18/22/bestvideo[vcodec^=avc1][height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4][vcodec!=none][acodec!=none]"
 
     private const val WATCHDOG_INTERVAL_MS = 5_000L
     private const val INACTIVITY_TIMEOUT_MS = 3 * 60_000L

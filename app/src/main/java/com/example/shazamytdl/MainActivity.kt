@@ -15,9 +15,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.MediaController
 import android.widget.Toast
-import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -115,7 +113,11 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import com.example.shazamytdl.data.Track
 import com.example.shazamytdl.data.TrackRepository
 import com.example.shazamytdl.data.TrackStatus
@@ -2141,44 +2143,36 @@ private fun YouTubePreviewPlayer(preview: YouTubeVideoPreview, modifier: Modifie
     }
 }
 
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 private fun LocalVideoPreviewPlayer(videoPath: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val videoUri = remember(videoPath) { Uri.fromFile(File(videoPath)) }
-    val videoView = remember(videoPath) {
-        VideoView(context).apply {
-            tag = videoPath
-            setBackgroundColor(android.graphics.Color.BLACK)
-            val controller = MediaController(context)
-            controller.setAnchorView(this)
-            setMediaController(controller)
-            setOnPreparedListener {
-                requestFocus()
-                start()
-                controller.show(3_000)
-            }
-            setOnErrorListener { _, _, _ ->
-                Toast.makeText(context, "Video previewja ni bilo mogoče predvajati.", Toast.LENGTH_SHORT).show()
-                true
-            }
-            setVideoURI(videoUri)
+    val player = remember(videoPath) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(videoUri))
+            playWhenReady = true
+            prepare()
         }
     }
 
-    DisposableEffect(videoView) {
+    DisposableEffect(player) {
         onDispose {
-            videoView.stopPlayback()
+            player.release()
         }
     }
 
     AndroidView(
-        factory = { videoView },
+        factory = { viewContext ->
+            PlayerView(viewContext).apply {
+                setBackgroundColor(android.graphics.Color.BLACK)
+                useController = true
+                this.player = player
+            }
+        },
         modifier = modifier,
         update = { view ->
-            if (view.tag != videoPath) {
-                view.tag = videoPath
-                view.setVideoURI(videoUri)
-            }
+            if (view.player !== player) view.player = player
         }
     )
 }
