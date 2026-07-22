@@ -281,6 +281,100 @@ object YoutubeDlBridge {
         )
     }
 
+    fun downloadPreviewVideo(
+        context: Context,
+        url: String,
+        outputDir: File,
+        cancelToken: DownloadCancelToken? = null,
+        onProgress: (progressPercent: Float, etaSeconds: Long) -> Unit = { _, _ -> }
+    ): File {
+        init(context)
+        cancelToken?.throwIfCancelled()
+
+        if (outputDir.exists()) {
+            check(outputDir.deleteRecursively()) {
+                "Prejšnjega video previewja ni bilo mogoče počistiti."
+            }
+        }
+        check(outputDir.mkdirs() || outputDir.isDirectory) {
+            "Could not create preview directory: ${outputDir.absolutePath}"
+        }
+
+        val outputTemplate = File(outputDir, "preview.%(ext)s").absolutePath
+        val request = YoutubeDLRequest(url).apply {
+            addOption("--no-playlist")
+            addOption("-f", PREVIEW_VIDEO_FORMAT)
+            addOption("--restrict-filenames")
+            addOption("--force-overwrites")
+            addOption("--max-filesize", "80M")
+            addOption("-o", outputTemplate)
+            addNetworkOptions()
+        }
+
+        val processId = "preview-${UUID.randomUUID()}"
+        Log.d("YoutubeDlBridge", "Starting video preview download: $url")
+        Log.d("YoutubeDlBridge", "Process ID: $processId")
+        val lastActivityAt = AtomicLong(System.currentTimeMillis())
+        val finished = AtomicBoolean(false)
+        val timedOut = AtomicBoolean(false)
+        val watchdog = thread(
+            start = true,
+            isDaemon = true,
+            name = "yt-dlp-preview-watchdog"
+        ) {
+            try {
+                while (!finished.get()) {
+                    Thread.sleep(WATCHDOG_INTERVAL_MS)
+                    if (System.currentTimeMillis() - lastActivityAt.get() >= INACTIVITY_TIMEOUT_MS) {
+                        timedOut.set(true)
+                        Log.e("YoutubeDlBridge", "Video preview timed out: $url")
+                        YoutubeDL.getInstance().destroyProcessById(processId)
+                        return@thread
+                    }
+                }
+            } catch (_: InterruptedException) {
+                // Normal completion interrupts the watchdog.
+            }
+        }
+        var executionError: Throwable? = null
+        val cancelAction = {
+            Log.d("YoutubeDlBridge", "Cancelling video preview process: $processId")
+            YoutubeDL.getInstance().destroyProcessById(processId)
+            Unit
+        }
+        cancelToken?.setCancelAction(cancelAction)
+        try {
+            synchronized(operationLock) {
+                cancelToken?.throwIfCancelled()
+                YoutubeDL.getInstance().execute(request, processId) { progress, etaInSeconds, _ ->
+                    cancelToken?.throwIfCancelled()
+                    lastActivityAt.set(System.currentTimeMillis())
+                    onProgress(progress, etaInSeconds)
+                }
+            }
+        } catch (error: Throwable) {
+            executionError = if (cancelToken?.isCancelled == true) {
+                DownloadCancelledException()
+            } else {
+                error
+            }
+        } finally {
+            cancelToken?.clearCancelAction()
+            finished.set(true)
+            watchdog.interrupt()
+        }
+        cancelToken?.throwIfCancelled()
+        if (timedOut.get()) {
+            error("Video preview je bil brez napredka več kot 3 minute in je bil prekinjen")
+        }
+        executionError?.let { throw it }
+
+        return outputDir.listFiles()
+            ?.filter { it.isFile && it.length() > 0L && it.extension.lowercase() in VIDEO_EXTENSIONS }
+            ?.maxByOrNull { it.lastModified() }
+            ?: error("Video preview ni bil prenesen.")
+    }
+
     private fun YoutubeDLRequest.addNetworkOptions() {
         addOption("--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
         addOption("--referer", "https://www.google.com/")
@@ -292,6 +386,10 @@ object YoutubeDlBridge {
     private val AUDIO_EXTENSIONS = setOf(
         "aac", "flac", "m4a", "mp3", "ogg", "opus", "vorbis", "wav", "webm"
     )
+
+    private val VIDEO_EXTENSIONS = setOf("mp4", "m4v", "webm", "mkv")
+    private const val PREVIEW_VIDEO_FORMAT =
+        "best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]/best[height<=360]/best"
 
     private const val WATCHDOG_INTERVAL_MS = 5_000L
     private const val INACTIVITY_TIMEOUT_MS = 3 * 60_000L

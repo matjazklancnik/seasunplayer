@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -11,9 +12,12 @@ import android.os.Build
 import android.os.Bundle
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.MediaController
 import android.widget.Toast
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -115,6 +119,7 @@ import androidx.media3.common.Player
 import com.example.shazamytdl.data.Track
 import com.example.shazamytdl.data.TrackRepository
 import com.example.shazamytdl.data.TrackStatus
+import com.example.shazamytdl.download.DownloadErrorFormatter
 import com.example.shazamytdl.download.DownloadQueueEvent
 import com.example.shazamytdl.download.DownloadQueueManager
 import com.example.shazamytdl.download.YoutubeDlBridge
@@ -252,6 +257,24 @@ private fun MainScreen(
     var videoPreview by remember { mutableStateOf<YouTubeVideoPreview?>(null) }
     var videoPreviewFullscreen by remember { mutableStateOf(false) }
     var videoPreviewLoadingTrackId by remember { mutableStateOf<String?>(null) }
+
+    fun deleteVideoPreview(path: String?) {
+        if (path == null) return
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                val file = File(path)
+                file.parentFile?.deleteRecursively() ?: file.delete()
+            }
+        }
+    }
+
+    fun clearVideoPreview() {
+        val oldPath = videoPreview?.localVideoPath
+        videoPreview = null
+        videoPreviewFullscreen = false
+        videoPreviewLoadingTrackId = null
+        deleteVideoPreview(oldPath)
+    }
 
     val voiceSearchController = remember(context) {
         VoiceSearchController(
@@ -578,9 +601,7 @@ private fun MainScreen(
     }
     LaunchedEffect(currentTrack?.id) {
         if (currentTrack?.id != videoPreview?.trackId) {
-            videoPreview = null
-            videoPreviewFullscreen = false
-            videoPreviewLoadingTrackId = null
+            clearVideoPreview()
         }
     }
     val playableTracks = remember(visibleTracks) {
@@ -617,44 +638,45 @@ private fun MainScreen(
     }
 
     fun openVideoPreview(track: Track) {
-        val sourceVideoId = track.sourceUrl?.let(::youtubeVideoIdFromUrl)
-        if (sourceVideoId != null) {
-            videoPreview = YouTubeVideoPreview(
-                trackId = track.id,
-                title = track.title,
-                artist = track.artist,
-                videoId = sourceVideoId
-            )
-            videoPreviewFullscreen = false
-            return
-        }
         if (videoPreviewLoadingTrackId == track.id) return
+        if (videoPreview?.trackId == track.id) return
 
+        clearVideoPreview()
         videoPreviewLoadingTrackId = track.id
         scope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    YoutubeDlBridge.searchYouTube(context, "${track.artist} - ${track.title}")
+                    val sourceVideoId = track.sourceUrl?.let(::youtubeVideoIdFromUrl)
+                    val videoId = sourceVideoId ?: YoutubeDlBridge
+                        .searchYouTube(context, "${track.artist} - ${track.title}")
                         .firstOrNull()
-                }
-            }
-            if (videoPreviewLoadingTrackId != track.id) return@launch
-
-            videoPreviewLoadingTrackId = null
-            result.onSuccess { youtubeResult ->
-                if (youtubeResult == null) {
-                    message = "YouTube preview za to skladbo ni najden."
-                } else {
-                    videoPreview = YouTubeVideoPreview(
+                        ?.videoId
+                        ?: error("YouTube preview za to skladbo ni najden.")
+                    val previewFile = YoutubeDlBridge.downloadPreviewVideo(
+                        context = context,
+                        url = "https://www.youtube.com/watch?v=$videoId",
+                        outputDir = File(File(context.cacheDir, "video-preview"), track.id)
+                    )
+                    YouTubeVideoPreview(
                         trackId = track.id,
                         title = track.title,
                         artist = track.artist,
-                        videoId = youtubeResult.videoId
+                        videoId = videoId,
+                        localVideoPath = previewFile.absolutePath
                     )
-                    videoPreviewFullscreen = false
                 }
+            }
+            if (videoPreviewLoadingTrackId != track.id) {
+                result.getOrNull()?.localVideoPath?.let(::deleteVideoPreview)
+                return@launch
+            }
+
+            videoPreviewLoadingTrackId = null
+            result.onSuccess { preview ->
+                videoPreview = preview
+                videoPreviewFullscreen = false
             }.onFailure { error ->
-                message = "YouTube preview ni uspel: ${error.message ?: error}"
+                message = "YouTube preview ni uspel: ${DownloadErrorFormatter.userMessage(error)}"
             }
         }
     }
@@ -975,10 +997,7 @@ private fun MainScreen(
                     isFullscreen = videoPreviewFullscreen,
                     onFullscreen = { videoPreviewFullscreen = true },
                     onExitFullscreen = { videoPreviewFullscreen = false },
-                    onClose = {
-                        videoPreview = null
-                        videoPreviewFullscreen = false
-                    }
+                    onClose = { clearVideoPreview() }
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -1983,7 +2002,8 @@ private data class YouTubeVideoPreview(
     val trackId: String,
     val title: String,
     val artist: String,
-    val videoId: String
+    val videoId: String,
+    val localVideoPath: String?
 )
 
 @Composable
@@ -2031,8 +2051,8 @@ private fun YouTubeVideoPreviewCard(
             }
             Spacer(Modifier.height(6.dp))
             if (!isFullscreen) {
-                YouTubeWebPlayer(
-                    videoId = preview.videoId,
+                YouTubePreviewPlayer(
+                    preview = preview,
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(16f / 9f)
@@ -2099,8 +2119,8 @@ private fun YouTubeVideoFullscreenDialog(
                         Icon(Icons.Default.Close, contentDescription = "Zapri video")
                     }
                 }
-                YouTubeWebPlayer(
-                    videoId = preview.videoId,
+                YouTubePreviewPlayer(
+                    preview = preview,
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
@@ -2109,6 +2129,56 @@ private fun YouTubeVideoFullscreenDialog(
             }
         }
     }
+}
+
+@Composable
+private fun YouTubePreviewPlayer(preview: YouTubeVideoPreview, modifier: Modifier = Modifier) {
+    val localVideoPath = preview.localVideoPath
+    if (localVideoPath != null) {
+        LocalVideoPreviewPlayer(videoPath = localVideoPath, modifier = modifier)
+    } else {
+        YouTubeWebPlayer(videoId = preview.videoId, modifier = modifier)
+    }
+}
+
+@Composable
+private fun LocalVideoPreviewPlayer(videoPath: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val videoUri = remember(videoPath) { Uri.fromFile(File(videoPath)) }
+    val videoView = remember(videoPath) {
+        VideoView(context).apply {
+            setBackgroundColor(android.graphics.Color.BLACK)
+            val controller = MediaController(context)
+            controller.setAnchorView(this)
+            setMediaController(controller)
+            setVideoURI(videoUri)
+            setOnPreparedListener {
+                seekTo(1)
+                controller.show(3_000)
+            }
+            setOnErrorListener { _, _, _ ->
+                Toast.makeText(context, "Video previewja ni bilo mogoče predvajati.", Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
+    }
+
+    DisposableEffect(videoView) {
+        onDispose {
+            videoView.stopPlayback()
+        }
+    }
+
+    AndroidView(
+        factory = { videoView },
+        modifier = modifier,
+        update = { view ->
+            if (view.tag != videoPath) {
+                view.tag = videoPath
+                view.setVideoURI(videoUri)
+            }
+        }
+    )
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -2123,7 +2193,20 @@ private fun YouTubeWebPlayer(videoId: String, modifier: Modifier = Modifier) {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(android.graphics.Color.BLACK)
-            webViewClient = WebViewClient()
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): Boolean {
+                    val uri = request?.url ?: return false
+                    return if (uri.isYouTubeWatchUrl()) {
+                        openYouTubeVideo(context, videoId)
+                        true
+                    } else {
+                        false
+                    }
+                }
+            }
             webChromeClient = WebChromeClient()
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -2302,6 +2385,26 @@ private fun youtubeVideoIdFromUrl(value: String): String? {
     return normalizedYouTubeVideoId(pathVideoId)
 }
 
+private fun openYouTubeVideo(context: Context, videoId: String) {
+    val safeVideoId = normalizedYouTubeVideoId(videoId) ?: return
+    val intent = Intent(
+        Intent.ACTION_VIEW,
+        "https://www.youtube.com/watch?v=$safeVideoId".toUri()
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    runCatching { context.startActivity(intent) }
+        .onFailure {
+            Toast.makeText(context, "YouTuba ni bilo mogoče odpreti.", Toast.LENGTH_SHORT).show()
+        }
+}
+
+private fun Uri.isYouTubeWatchUrl(): Boolean {
+    val host = host.orEmpty().lowercase()
+    val path = path.orEmpty()
+    return (host == "youtu.be" && path.length > 1) ||
+        ((host == "youtube.com" || host.endsWith(".youtube.com")) && path == "/watch")
+}
+
 private fun normalizedYouTubeVideoId(value: String?): String? = value
     ?.trim()
     ?.takeIf { youtubeVideoIdRegex.matches(it) }
@@ -2333,8 +2436,8 @@ private fun youtubeEmbedHtml(videoId: String): String {
         </head>
         <body>
             <iframe
-                src="https://www.youtube.com/embed/$safeVideoId?playsinline=1&controls=1&rel=0&modestbranding=1"
-                allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                src="https://www.youtube.com/embed/$safeVideoId?playsinline=1&controls=1&rel=0&enablejsapi=1&origin=https%3A%2F%2Fwww.youtube.com"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                 allowfullscreen>
             </iframe>
         </body>
