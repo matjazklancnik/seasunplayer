@@ -2147,19 +2147,21 @@ private fun LocalVideoPreviewPlayer(videoPath: String, modifier: Modifier = Modi
     val videoUri = remember(videoPath) { Uri.fromFile(File(videoPath)) }
     val videoView = remember(videoPath) {
         VideoView(context).apply {
+            tag = videoPath
             setBackgroundColor(android.graphics.Color.BLACK)
             val controller = MediaController(context)
             controller.setAnchorView(this)
             setMediaController(controller)
-            setVideoURI(videoUri)
             setOnPreparedListener {
-                seekTo(1)
+                requestFocus()
+                start()
                 controller.show(3_000)
             }
             setOnErrorListener { _, _, _ ->
                 Toast.makeText(context, "Video previewja ni bilo mogoče predvajati.", Toast.LENGTH_SHORT).show()
                 true
             }
+            setVideoURI(videoUri)
         }
     }
 

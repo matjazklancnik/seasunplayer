@@ -307,6 +307,7 @@ object YoutubeDlBridge {
             addOption("--restrict-filenames")
             addOption("--force-overwrites")
             addOption("--max-filesize", "80M")
+            addOption("--merge-output-format", "mp4")
             addOption("-o", outputTemplate)
             addNetworkOptions()
         }
@@ -387,9 +388,9 @@ object YoutubeDlBridge {
         "aac", "flac", "m4a", "mp3", "ogg", "opus", "vorbis", "wav", "webm"
     )
 
-    private val VIDEO_EXTENSIONS = setOf("mp4", "m4v", "webm", "mkv")
+    private val VIDEO_EXTENSIONS = setOf("mp4", "m4v")
     private const val PREVIEW_VIDEO_FORMAT =
-        "best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]/best[height<=360]/best"
+        "18/134+140/135+140/22/best[height<=360][ext=mp4][acodec!=none]/best[height<=480][ext=mp4][acodec!=none]"
 
     private const val WATCHDOG_INTERVAL_MS = 5_000L
     private const val INACTIVITY_TIMEOUT_MS = 3 * 60_000L
