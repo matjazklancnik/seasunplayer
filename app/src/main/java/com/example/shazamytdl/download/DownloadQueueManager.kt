@@ -26,6 +26,9 @@ sealed interface DownloadQueueEvent {
     data class StatusChanged(override val trackId: String) : DownloadQueueEvent
     data class Completed(override val trackId: String, val fileName: String) : DownloadQueueEvent
     data class Failed(override val trackId: String, val message: String) : DownloadQueueEvent
+    data class AllStopped(val message: String) : DownloadQueueEvent {
+        override val trackId: String = ""
+    }
 }
 
 object DownloadQueueManager {
@@ -92,6 +95,7 @@ object DownloadQueueManager {
 
     fun enqueue(trackId: String): Boolean {
         check(initialized) { "DownloadQueueManager is not initialized" }
+        if (stopAllIfLowStorage()) return false
         val track = repository.getById(trackId) ?: return false
         synchronized(queueLock) {
             if (!pendingTrackIds.add(trackId)) return false
@@ -143,6 +147,50 @@ object DownloadQueueManager {
         }
         _events.tryEmit(DownloadQueueEvent.StatusChanged(trackId))
         return true
+    }
+
+    fun cancelAll(message: String? = null): Int {
+        check(initialized) { "DownloadQueueManager is not initialized" }
+        var cancelToken: DownloadCancelToken? = null
+        val queuedIds = synchronized(queueLock) {
+            val ids = buildSet {
+                activeTrackId?.let(::add)
+                priorityQueue.forEach { add(it.trackId) }
+                regularQueue.forEach { add(it.trackId) }
+                addAll(pendingTrackIds)
+            }
+            cancelToken = activeCancelToken
+            regularQueue.clear()
+            priorityQueue.clear()
+            pendingTrackIds.clear()
+            activeTrackId = null
+            activeCancelToken = null
+            ids
+        }
+        cancelToken?.cancel()
+
+        val storedActiveIds = repository.list()
+            .filter { it.status == TrackStatus.QUEUED || it.status == TrackStatus.DOWNLOADING }
+            .map { it.id }
+        val resetIds = (queuedIds + storedActiveIds).toSet()
+        resetIds.forEach { trackId ->
+            repository.resetDownloadState(trackId)
+            File(File(appContext.filesDir, "music"), trackId).deleteRecursively()
+        }
+        _progress.update { it - resetIds }
+        resetIds.forEach { trackId ->
+            _events.tryEmit(DownloadQueueEvent.StatusChanged(trackId))
+        }
+        message?.let { _events.tryEmit(DownloadQueueEvent.AllStopped(it)) }
+        stopDownloadServiceIfIdle()
+        return resetIds.size
+    }
+
+    fun cancelAllForLowStorage(): Int = cancelAll(LOW_STORAGE_STOP_MESSAGE)
+
+    fun hasEnoughStorageForDownloads(): Boolean {
+        check(initialized) { "DownloadQueueManager is not initialized" }
+        return hasEnoughFreeStorage()
     }
 
     private fun removeFromQueue(trackId: String): QueueRemoval {
@@ -249,6 +297,7 @@ object DownloadQueueManager {
         try {
             if (entry.generation != libraryGeneration) return
             cancelToken.throwIfCancelled()
+            if (stopAllIfLowStorage(cancelToken)) return
             val track = repository.getById(trackId) ?: return
             repository.updateStatus(trackId, TrackStatus.DOWNLOADING)
             _progress.update { it + (trackId to "Priprava prenosa...") }
@@ -464,6 +513,7 @@ object DownloadQueueManager {
             subPath = "audio",
             cancelToken = cancelToken
         ) { progress, eta ->
+            if (stopAllIfLowStorage(cancelToken)) return@downloadAllowedUrl
             if (entry.generation == libraryGeneration && !cancelToken.isCancelled) {
                 _progress.update {
                     it + (track.id to "Zadetek ${candidate.label}: ${progress.toInt()}% · ETA ${eta}s")
@@ -536,6 +586,15 @@ object DownloadQueueManager {
         }
     }
 
+    private fun stopAllIfLowStorage(cancelToken: DownloadCancelToken? = null): Boolean {
+        if (hasEnoughFreeStorage()) return false
+        cancelAllForLowStorage()
+        cancelToken?.throwIfCancelled()
+        return true
+    }
+
+    private fun hasEnoughFreeStorage(): Boolean = appContext.filesDir.usableSpace >= MIN_FREE_STORAGE_BYTES
+
     private fun String.isYouTubeUrl(): Boolean = contains("youtube.com") || contains("youtu.be")
 
     private fun String.normalizedYouTubeUrlKey(): String {
@@ -544,6 +603,10 @@ object DownloadQueueManager {
         return videoId ?: this.substringBefore('&').substringBefore("&list=")
     }
 
+    const val LOW_STORAGE_STOP_MESSAGE =
+        "Na napravi je manj kot 3 GB prostega prostora. Prenosi so ustavljeni."
+
+    private const val MIN_FREE_STORAGE_BYTES = 3L * 1024L * 1024L * 1024L
     private const val SEARCH_CANDIDATE_POOL_SIZE = 6
     private const val AUTO_DOWNLOAD_CANDIDATE_COUNT = 3
 }

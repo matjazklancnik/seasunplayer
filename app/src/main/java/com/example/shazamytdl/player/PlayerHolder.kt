@@ -31,6 +31,7 @@ class PlayerHolder(context: Context) {
     @Volatile
     private var controller: MediaController? = null
     private var lastPositionPersistedAt = 0L
+    private val temporaryPlaybackPaths = mutableMapOf<String, String>()
     private val controllerFuture = MediaController.Builder(
         appContext,
         SessionToken(appContext, ComponentName(appContext, PlaybackService::class.java))
@@ -51,6 +52,7 @@ class PlayerHolder(context: Context) {
                     updateCurrentTrack(connectedController)
                     connectedController.addListener(object : Player.Listener {
                         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                            deleteInactiveTemporaryFiles(mediaItem?.mediaId)
                             _currentTrackId.value = mediaItem?.mediaId
                             persistPlayerState(connectedController)
                         }
@@ -128,6 +130,7 @@ class PlayerHolder(context: Context) {
             )
             player.prepare()
             player.play()
+            deleteTemporaryFiles()
             persistQueue(playableTracks)
             persistPlayerState(player)
             updateCurrentTrack(player)
@@ -162,6 +165,46 @@ class PlayerHolder(context: Context) {
         artist: String,
         artworkPath: String? = null
     ) = playLocalFile(trackId, path, title, artist, artworkPath)
+
+    fun playTemporaryFile(
+        trackId: String,
+        path: String,
+        title: String,
+        artist: String,
+        artworkPath: String? = null
+    ) {
+        withController { player ->
+            if (player.currentMediaItem?.mediaId == trackId && temporaryPlaybackPaths[trackId] == path) {
+                if (player.isPlaying) {
+                    pause()
+                } else {
+                    if (player.playbackState == Player.STATE_ENDED) player.seekTo(0)
+                    player.play()
+                }
+                return@withController
+            }
+
+            rememberCurrentPosition(player)
+            temporaryPlaybackPaths.put(trackId, path)
+                ?.takeIf { it != path }
+                ?.let(::deleteTemporaryPath)
+            player.setMediaItem(
+                mediaItem(
+                    trackId = trackId,
+                    path = path,
+                    title = title,
+                    artist = artist,
+                    artworkPath = artworkPath
+                )
+            )
+            player.prepare()
+            player.play()
+            deleteInactiveTemporaryFiles(trackId)
+            clearSavedQueue()
+            persistPlayerState(player)
+            updateCurrentTrack(player)
+        }
+    }
 
     fun pause() {
         withController { player ->
@@ -200,6 +243,7 @@ class PlayerHolder(context: Context) {
             player.clearMediaItems()
             _currentTrackId.value = null
             clearSavedQueue()
+            deleteTemporaryFiles()
         }
     }
 
@@ -256,8 +300,12 @@ class PlayerHolder(context: Context) {
         withController { player ->
             val index = (0 until player.mediaItemCount)
                 .firstOrNull { player.getMediaItemAt(it).mediaId == trackId }
-                ?: return@withController
+            if (index == null) {
+                deleteTemporaryFile(trackId)
+                return@withController
+            }
             player.removeMediaItem(index)
+            deleteTemporaryFile(trackId)
             if (player.mediaItemCount == 0) {
                 _currentTrackId.value = null
                 clearSavedQueue()
@@ -286,25 +334,41 @@ class PlayerHolder(context: Context) {
     fun release() {
         controller?.let(::persistPlayerState)
         controller = null
+        deleteTemporaryFiles()
         MediaController.releaseFuture(controllerFuture)
     }
 
     private fun trackToMediaItem(track: Track): MediaItem {
-        val path = requireNotNull(track.localPath)
+        return mediaItem(
+            trackId = track.id,
+            path = requireNotNull(track.localPath),
+            title = track.title,
+            artist = track.artist,
+            artworkPath = track.artworkPath
+        )
+    }
+
+    private fun mediaItem(
+        trackId: String,
+        path: String,
+        title: String,
+        artist: String,
+        artworkPath: String? = null
+    ): MediaItem {
         val file = File(path)
         require(file.isFile) { "Zvočna datoteka ne obstaja: $path" }
         val metadata = MediaMetadata.Builder()
-            .setTitle(track.title)
-            .setArtist(track.artist)
+            .setTitle(title)
+            .setArtist(artist)
             .apply {
-                track.artworkPath
+                artworkPath
                     ?.let(::File)
                     ?.takeIf { it.isFile }
                     ?.let { setArtworkUri(Uri.fromFile(it)) }
             }
             .build()
         return MediaItem.Builder()
-            .setMediaId(track.id)
+            .setMediaId(trackId)
             .setUri(Uri.fromFile(file))
             .setMediaMetadata(metadata)
             .build()
@@ -413,6 +477,33 @@ class PlayerHolder(context: Context) {
 
     private fun updateCurrentTrack(player: MediaController) {
         _currentTrackId.value = player.currentMediaItem?.mediaId
+        deleteInactiveTemporaryFiles(player.currentMediaItem?.mediaId)
+    }
+
+    private fun deleteInactiveTemporaryFiles(activeTrackId: String?) {
+        val staleTrackIds = temporaryPlaybackPaths.keys
+            .filter { it != activeTrackId }
+            .toList()
+        staleTrackIds.forEach(::deleteTemporaryFile)
+    }
+
+    private fun deleteTemporaryFiles() {
+        temporaryPlaybackPaths.keys.toList().forEach(::deleteTemporaryFile)
+    }
+
+    private fun deleteTemporaryFile(trackId: String) {
+        val path = temporaryPlaybackPaths.remove(trackId) ?: return
+        deleteTemporaryPath(path)
+    }
+
+    private fun deleteTemporaryPath(path: String) {
+        val file = File(path)
+        val parent = file.parentFile
+        if (parent?.parentFile?.name == "temporary-playback") {
+            parent.deleteRecursively()
+        } else {
+            file.delete()
+        }
     }
 
     private fun clearSavedQueue() {

@@ -288,6 +288,7 @@ private fun MainScreen(
     }
     var videoPreviewFullscreen by rememberSaveable { mutableStateOf(false) }
     var videoPreviewLoadingTrackId by remember { mutableStateOf<String?>(null) }
+    var temporaryPlaybackLoadingTrackId by remember { mutableStateOf<String?>(null) }
     var videoPreviewPositionMs by rememberSaveable { mutableStateOf(0L) }
     var videoPreviewIsPlaying by rememberSaveable { mutableStateOf(false) }
     var videoPreviewAudioHandedOff by rememberSaveable { mutableStateOf(false) }
@@ -694,6 +695,7 @@ private fun MainScreen(
             message = when (event) {
                 is DownloadQueueEvent.Completed -> "Preneseno: ${event.fileName}"
                 is DownloadQueueEvent.Failed -> "Download napaka: ${event.message}"
+                is DownloadQueueEvent.AllStopped -> event.message
                 is DownloadQueueEvent.StatusChanged -> null
             }
         }
@@ -753,6 +755,12 @@ private fun MainScreen(
                 track.status != TrackStatus.DOWNLOADING
         }
     }
+    val activeDownloadTracks = remember(tracks) {
+        tracks.filter { track ->
+            track.status == TrackStatus.QUEUED || track.status == TrackStatus.DOWNLOADING
+        }
+    }
+    val hasActiveDownloads = activeDownloadTracks.isNotEmpty()
 
     fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -783,9 +791,29 @@ private fun MainScreen(
         }
     }
 
+    fun cancelAllDownloads() {
+        scope.launch(Dispatchers.IO) {
+            val cancelledCount = DownloadQueueManager.cancelAll()
+            withContext(Dispatchers.Main) {
+                refreshTracks()
+                message = if (cancelledCount > 0) {
+                    "Prenosi so ustavljeni."
+                } else {
+                    "Ni aktivnih prenosov."
+                }
+            }
+        }
+    }
+
     fun enqueueAllDownloads() {
         if (downloadableTracks.isEmpty()) {
             message = "Vse skladbe so že prenesene ali v čakalni vrsti."
+            return
+        }
+        if (!DownloadQueueManager.hasEnoughStorageForDownloads()) {
+            DownloadQueueManager.cancelAllForLowStorage()
+            refreshTracks()
+            message = DownloadQueueManager.LOW_STORAGE_STOP_MESSAGE
             return
         }
 
@@ -904,6 +932,73 @@ private fun MainScreen(
                     activeTrack.artist,
                     activeTrack.artworkPath
                 )
+            }
+        }
+    }
+
+    fun playTemporaryTrack(track: Track) {
+        if (temporaryPlaybackLoadingTrackId != null) {
+            message = "Začasni prenos skladbe je že v teku."
+            return
+        }
+        if (!track.localPath.isNullOrBlank()) {
+            togglePlaybackFor(track)
+            return
+        }
+        if (playingTrackId == track.id) {
+            if (isPlaying) playerHolder?.pause() else playerHolder?.play()
+            return
+        }
+        if (!DownloadQueueManager.hasEnoughStorageForDownloads()) {
+            DownloadQueueManager.cancelAllForLowStorage()
+            refreshTracks()
+            message = DownloadQueueManager.LOW_STORAGE_STOP_MESSAGE
+            return
+        }
+
+        temporaryPlaybackLoadingTrackId = track.id
+        val temporaryOutputDir = File(File(context.cacheDir, "temporary-playback"), track.id)
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val sourceUrl = track.sourceUrl
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: YoutubeDlBridge.searchYouTube(
+                            context = context,
+                            query = "${track.artist} - ${track.title}",
+                            maxResults = 1
+                        ).firstOrNull()?.url
+                        ?: "ytsearch1:${track.artist} - ${track.title}"
+                    YoutubeDlBridge.downloadAllowedUrl(
+                        context = context,
+                        url = sourceUrl,
+                        outputDir = temporaryOutputDir,
+                        subPath = "audio"
+                    ) { _, _ ->
+                        if (!DownloadQueueManager.hasEnoughStorageForDownloads()) {
+                            DownloadQueueManager.cancelAllForLowStorage()
+                            error(DownloadQueueManager.LOW_STORAGE_STOP_MESSAGE)
+                        }
+                    }
+                }
+            }
+            if (temporaryPlaybackLoadingTrackId != track.id) {
+                temporaryOutputDir.deleteRecursively()
+                return@launch
+            }
+            temporaryPlaybackLoadingTrackId = null
+            result.onSuccess { downloaded ->
+                playerHolder?.playTemporaryFile(
+                    trackId = track.id,
+                    path = downloaded.file.absolutePath,
+                    title = track.title,
+                    artist = track.artist,
+                    artworkPath = track.artworkPath
+                )
+            }.onFailure { error ->
+                temporaryOutputDir.deleteRecursively()
+                message = "Začasno predvajanje ni uspelo: ${DownloadErrorFormatter.userMessage(error)}"
             }
         }
     }
@@ -1079,13 +1174,17 @@ private fun MainScreen(
                     }
                 }
                 IconButton(
-                    onClick = ::enqueueAllDownloads,
-                    enabled = downloadableTracks.isNotEmpty(),
+                    onClick = if (hasActiveDownloads) ::cancelAllDownloads else ::enqueueAllDownloads,
+                    enabled = hasActiveDownloads || downloadableTracks.isNotEmpty(),
                     modifier = Modifier.size(40.dp)
                 ) {
                     Icon(
-                        Icons.Default.CloudDownload,
-                        contentDescription = "Prenesi vse neprenešene skladbe",
+                        imageVector = if (hasActiveDownloads) Icons.Default.Stop else Icons.Default.CloudDownload,
+                        contentDescription = if (hasActiveDownloads) {
+                            "Ustavi prenos vseh neprenesenih skladb"
+                        } else {
+                            "Prenesi vse neprenesene skladbe"
+                        },
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -1351,22 +1450,28 @@ private fun MainScreen(
                         },
                         progressText = progressByTrack[track.id],
                         onDownload = {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                                ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.POST_NOTIFICATIONS
-                                ) != PackageManager.PERMISSION_GRANTED
-                            ) {
-                                notificationPermissionLauncher.launch(
-                                    Manifest.permission.POST_NOTIFICATIONS
-                                )
-                            }
-                            scope.launch(Dispatchers.IO) {
-                                val added = DownloadQueueManager.enqueue(track.id)
-                                withContext(Dispatchers.Main) {
-                                    refreshTracks()
-                                    if (!added) {
-                                        message = "Skladba je že v čakalni vrsti."
+                            if (!DownloadQueueManager.hasEnoughStorageForDownloads()) {
+                                DownloadQueueManager.cancelAllForLowStorage()
+                                refreshTracks()
+                                message = DownloadQueueManager.LOW_STORAGE_STOP_MESSAGE
+                            } else {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                    ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    notificationPermissionLauncher.launch(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    )
+                                }
+                                scope.launch(Dispatchers.IO) {
+                                    val added = DownloadQueueManager.enqueue(track.id)
+                                    withContext(Dispatchers.Main) {
+                                        refreshTracks()
+                                        if (!added) {
+                                            message = "Skladba je že v čakalni vrsti."
+                                        }
                                     }
                                 }
                             }
@@ -1383,6 +1488,11 @@ private fun MainScreen(
                         },
                         isActive = playingTrackId == track.id,
                         isPlaying = playingTrackId == track.id && isPlaying,
+                        isTemporaryPlaybackLoading = temporaryPlaybackLoadingTrackId == track.id,
+                        isTemporaryPlaying = playingTrackId == track.id &&
+                            track.localPath.isNullOrBlank() &&
+                            isPlaying,
+                        onTemporaryPlay = { playTemporaryTrack(track) },
                         onEditSource = { trackToEditSource = track },
                         onPromote = {
                             val promoted = DownloadQueueManager.promote(track.id)
@@ -2301,6 +2411,9 @@ private fun TrackCard(
     onPlay: () -> Unit,
     isActive: Boolean,
     isPlaying: Boolean,
+    isTemporaryPlaybackLoading: Boolean,
+    isTemporaryPlaying: Boolean,
+    onTemporaryPlay: () -> Unit,
     onEditSource: () -> Unit,
     onPromote: () -> Unit,
     onDelete: () -> Unit,
@@ -2404,6 +2517,33 @@ private fun TrackCard(
                 horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
                 verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
+                if (track.localPath.isNullOrBlank()) {
+                    IconButton(
+                        onClick = onTemporaryPlay,
+                        enabled = track.status != TrackStatus.QUEUED &&
+                            track.status != TrackStatus.DOWNLOADING &&
+                            !isTemporaryPlaybackLoading,
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        if (isTemporaryPlaybackLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (isTemporaryPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = if (isTemporaryPlaying) {
+                                    "Pavza začasnega predvajanja"
+                                } else {
+                                    "Predvajaj začasno brez trajnega prenosa"
+                                },
+                                modifier = Modifier.size(20.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
                 TextButton(
                     onClick = onEditSource,
                     enabled = track.status != TrackStatus.QUEUED &&
