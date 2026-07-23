@@ -214,6 +214,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MainScreen(
     repository: TrackRepository = TrackRepository(LocalContext.current),
@@ -745,6 +746,13 @@ private fun MainScreen(
     val playableTracks = remember(visibleTracks) {
         visibleTracks.filter { it.localPath?.let(::File)?.isFile == true }
     }
+    val downloadableTracks = remember(tracks) {
+        tracks.filter { track ->
+            track.status != TrackStatus.DOWNLOADED &&
+                track.status != TrackStatus.QUEUED &&
+                track.status != TrackStatus.DOWNLOADING
+        }
+    }
 
     fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -770,6 +778,29 @@ private fun MainScreen(
                     }
                 } else {
                     "Skladba ni več v čakalni vrsti."
+                }
+            }
+        }
+    }
+
+    fun enqueueAllDownloads() {
+        if (downloadableTracks.isEmpty()) {
+            message = "Vse skladbe so že prenesene ali v čakalni vrsti."
+            return
+        }
+
+        requestNotificationPermissionIfNeeded()
+        val trackIds = downloadableTracks.map { it.id }
+        scope.launch(Dispatchers.IO) {
+            val addedCount = trackIds.count { trackId ->
+                DownloadQueueManager.enqueue(trackId)
+            }
+            withContext(Dispatchers.Main) {
+                refreshTracks()
+                message = if (addedCount > 0) {
+                    "V čakalno vrsto dodanih skladb: $addedCount."
+                } else {
+                    "Vse skladbe so že prenesene ali v čakalni vrsti."
                 }
             }
         }
@@ -1004,51 +1035,71 @@ private fun MainScreen(
             }
             Spacer(Modifier.height(8.dp))
 
-            Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedButton(
-                onClick = { csvLauncher.launch(arrayOf("text/*", "text/comma-separated-values", "application/csv", "application/vnd.ms-excel")) },
-                modifier = Modifier.height(34.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Text("CSV", fontSize = 12.sp)
-            }
-            OutlinedButton(
-                onClick = { showAddDialog = true },
-                modifier = Modifier.height(34.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
-            ) {
-                Text("Dodaj", fontSize = 12.sp)
-            }
-            OutlinedButton(
-                onClick = ::authorizeYouTube,
-                enabled = !isYouTubeLoading,
-                modifier = Modifier.height(34.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
-            ) {
-                if (isYouTubeLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(14.dp),
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Text("YouTube", fontSize = 12.sp)
+                OutlinedButton(
+                    onClick = {
+                        csvLauncher.launch(
+                            arrayOf(
+                                "text/*",
+                                "text/comma-separated-values",
+                                "application/csv",
+                                "application/vnd.ms-excel"
+                            )
+                        )
+                    },
+                    modifier = Modifier.heightIn(min = 40.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text("CSV", fontSize = 12.sp)
                 }
-            }
-            IconButton(
-                onClick = { showClearDialog = true },
-                enabled = tracks.isNotEmpty() && !isClearing,
-                modifier = Modifier.size(34.dp)
-            ) {
-                Icon(
-                    Icons.Default.DeleteOutline,
-                    contentDescription = "Počisti seznam in prenesene datoteke",
-                    modifier = Modifier.size(19.dp)
-                )
-            }
+                OutlinedButton(
+                    onClick = { showAddDialog = true },
+                    modifier = Modifier.heightIn(min = 40.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text("Dodaj", fontSize = 12.sp)
+                }
+                OutlinedButton(
+                    onClick = ::authorizeYouTube,
+                    enabled = !isYouTubeLoading,
+                    modifier = Modifier.heightIn(min = 40.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    if (isYouTubeLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("YouTube", fontSize = 12.sp)
+                    }
+                }
+                IconButton(
+                    onClick = ::enqueueAllDownloads,
+                    enabled = downloadableTracks.isNotEmpty(),
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        Icons.Default.CloudDownload,
+                        contentDescription = "Prenesi vse neprenešene skladbe",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                IconButton(
+                    onClick = { showClearDialog = true },
+                    enabled = tracks.isNotEmpty() && !isClearing,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        Icons.Default.DeleteOutline,
+                        contentDescription = "Počisti seznam in prenesene datoteke",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -2329,7 +2380,7 @@ private fun TrackCard(
                         imageVector = Icons.Default.OfflinePin,
                         contentDescription = "Offline",
                         modifier = Modifier.size(16.dp),
-                        tint = Color(0xFF4CAF50)
+                        tint = MaterialTheme.colorScheme.secondary
                     )
                     Spacer(Modifier.width(4.dp))
                 }
@@ -2367,7 +2418,7 @@ private fun TrackCard(
                 if (track.status == TrackStatus.QUEUED) {
                     TextButton(
                         onClick = onPromote,
-                        colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFF9800)),
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.tertiary),
                         modifier = Modifier.heightIn(min = 40.dp),
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                     ) {
