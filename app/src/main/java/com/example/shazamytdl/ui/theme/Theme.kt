@@ -14,6 +14,7 @@ enum class AppVisualStyle(
 ) {
     SUNSET("sunset", "Sončni zahod", "Temno morje s toplim sončnim sijem"),
     OCEAN("ocean", "Ocean", "Mirni turkizni in modri odtenki"),
+    DESERT("desert", "Puščava", "Topel pesek z glinenimi in oaznimi poudarki"),
     CLEAN("clean", "Svetla", "Čisto in svetlo ozadje za dnevno uporabo");
 
     companion object {
@@ -57,6 +58,24 @@ private val CleanColors = lightColorScheme(
     onSurfaceVariant = Color(0xFF40545C)
 )
 
+private val DesertColors = lightColorScheme(
+    primary = Color(0xFF965116),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFFFD4A8),
+    onPrimaryContainer = Color(0xFF321400),
+    secondary = Color(0xFF006B69),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFF8DF1EE),
+    onSecondaryContainer = Color(0xFF00201F),
+    background = Color(0xFFFFF2DD),
+    onBackground = Color(0xFF261A0B),
+    surface = Color(0xFFFFFBF5),
+    surfaceVariant = Color(0xFFEEDDC5),
+    onSurface = Color(0xFF241A10),
+    onSurfaceVariant = Color(0xFF5C4935),
+    outline = Color(0xFF8D765E)
+)
+
 @Composable
 fun ShazamYtdlTheme(
     style: AppVisualStyle = AppVisualStyle.SUNSET,
@@ -66,6 +85,7 @@ fun ShazamYtdlTheme(
         colorScheme = when (style) {
             AppVisualStyle.SUNSET -> SunsetColors
             AppVisualStyle.OCEAN -> OceanColors
+            AppVisualStyle.DESERT -> DesertColors
             AppVisualStyle.CLEAN -> CleanColors
         },
         content = content
@@ -78,6 +98,9 @@ fun appBackgroundBrush(style: AppVisualStyle): Brush = when (style) {
     )
     AppVisualStyle.OCEAN -> Brush.verticalGradient(
         listOf(Color(0xFF063A44), Color(0xFF08777B), Color(0xFF0B3445))
+    )
+    AppVisualStyle.DESERT -> Brush.verticalGradient(
+        listOf(Color(0xFFFFD08A), Color(0xFFE49A45), Color(0xFF7A4A30))
     )
     AppVisualStyle.CLEAN -> Brush.verticalGradient(
         listOf(Color(0xFFF7FBFC), Color(0xFFDDEEF2), Color(0xFFF4F8FA))
