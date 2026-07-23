@@ -122,7 +122,10 @@ import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.example.shazamytdl.data.Track
 import com.example.shazamytdl.data.TrackRepository
@@ -711,15 +714,31 @@ private fun MainScreen(
                         .firstOrNull()
                         ?.videoId
                         ?: error("YouTube preview za to skladbo ni najden.")
-                    val previewFile = YoutubeDlBridge.downloadPreviewVideo(
-                        context = context,
-                        url = "https://www.youtube.com/watch?v=$videoId",
-                        outputDir = File(File(context.cacheDir, "video-preview"), track.id)
-                    )
-                    DownloadedYouTubeVideoPreview(
-                        videoId = videoId,
-                        localVideoPath = previewFile.absolutePath
-                    )
+                    val previewUrl = "https://www.youtube.com/watch?v=$videoId"
+                    val streamUrl = runCatching {
+                        YoutubeDlBridge.resolvePreviewVideoStreamUrl(
+                            context = context,
+                            url = previewUrl
+                        )
+                    }.getOrNull()
+                    if (streamUrl != null) {
+                        DownloadedYouTubeVideoPreview(
+                            videoId = videoId,
+                            streamUrl = streamUrl,
+                            localVideoPath = null
+                        )
+                    } else {
+                        val previewFile = YoutubeDlBridge.downloadPreviewVideo(
+                            context = context,
+                            url = previewUrl,
+                            outputDir = File(File(context.cacheDir, "video-preview"), track.id)
+                        )
+                        DownloadedYouTubeVideoPreview(
+                            videoId = videoId,
+                            streamUrl = null,
+                            localVideoPath = previewFile.absolutePath
+                        )
+                    }
                 }
             }
             if (videoPreviewLoadingTrackId != track.id) {
@@ -738,6 +757,7 @@ private fun MainScreen(
                     title = track.title,
                     artist = track.artist,
                     videoId = downloadedPreview.videoId,
+                    streamUrl = downloadedPreview.streamUrl,
                     localVideoPath = downloadedPreview.localVideoPath,
                     startPositionMs = startPositionMs
                 )
@@ -2333,7 +2353,8 @@ private fun String.normalizedForSearch(): String = Normalizer
 
 private data class DownloadedYouTubeVideoPreview(
     val videoId: String,
-    val localVideoPath: String
+    val streamUrl: String?,
+    val localVideoPath: String?
 )
 
 private data class YouTubeVideoPreview(
@@ -2341,6 +2362,7 @@ private data class YouTubeVideoPreview(
     val title: String,
     val artist: String,
     val videoId: String,
+    val streamUrl: String?,
     val localVideoPath: String?,
     val startPositionMs: Long
 )
@@ -2355,6 +2377,7 @@ private val YouTubeVideoPreviewSaver = Saver<YouTubeVideoPreview?, String>(
                 .put("title", preview.title)
                 .put("artist", preview.artist)
                 .put("videoId", preview.videoId)
+                .put("streamUrl", preview.streamUrl.orEmpty())
                 .put("localVideoPath", preview.localVideoPath.orEmpty())
                 .put("startPositionMs", preview.startPositionMs)
                 .toString()
@@ -2371,6 +2394,7 @@ private val YouTubeVideoPreviewSaver = Saver<YouTubeVideoPreview?, String>(
                     title = json.getString("title"),
                     artist = json.getString("artist"),
                     videoId = json.getString("videoId"),
+                    streamUrl = json.optString("streamUrl").takeIf(String::isNotBlank),
                     localVideoPath = json.optString("localVideoPath").takeIf(String::isNotBlank),
                     startPositionMs = json.optLong("startPositionMs", 0L)
                 )
@@ -2726,9 +2750,11 @@ private fun YouTubePreviewPlayer(
     modifier: Modifier = Modifier
 ) {
     val localVideoPath = preview.localVideoPath
-    if (localVideoPath != null) {
-        LocalVideoPreviewPlayer(
-            videoPath = localVideoPath,
+    val streamUrl = preview.streamUrl
+    when {
+        localVideoPath != null -> MediaUriVideoPreviewPlayer(
+            mediaKey = localVideoPath,
+            mediaUri = remember(localVideoPath) { Uri.fromFile(File(localVideoPath)) },
             initialPositionMs = playbackPositionMs,
             onPositionChanged = onPositionChanged,
             onPlaybackStarted = onPlaybackStarted,
@@ -2736,16 +2762,27 @@ private fun YouTubePreviewPlayer(
             playWhenReady = playWhenReady,
             modifier = modifier
         )
-    } else {
-        YouTubeWebPlayer(
-            videoId = preview.videoId,
+        streamUrl != null -> MediaUriVideoPreviewPlayer(
+            mediaKey = streamUrl,
+            mediaUri = remember(streamUrl) { Uri.parse(streamUrl) },
+            initialPositionMs = playbackPositionMs,
+            onPositionChanged = onPositionChanged,
+            onPlaybackStarted = onPlaybackStarted,
             showControls = showControls,
+            playWhenReady = playWhenReady,
             modifier = modifier
         )
-        LaunchedEffect(preview.videoId, playWhenReady) {
-            if (playWhenReady) {
-                delay(250L)
-                onPlaybackStarted()
+        else -> {
+            YouTubeWebPlayer(
+                videoId = preview.videoId,
+                showControls = showControls,
+                modifier = modifier
+            )
+            LaunchedEffect(preview.videoId, playWhenReady) {
+                if (playWhenReady) {
+                    delay(250L)
+                    onPlaybackStarted()
+                }
             }
         }
     }
@@ -2753,8 +2790,9 @@ private fun YouTubePreviewPlayer(
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun LocalVideoPreviewPlayer(
-    videoPath: String,
+private fun MediaUriVideoPreviewPlayer(
+    mediaKey: String,
+    mediaUri: Uri,
     initialPositionMs: Long,
     onPositionChanged: (Long) -> Unit,
     onPlaybackStarted: () -> Unit,
@@ -2763,14 +2801,26 @@ private fun LocalVideoPreviewPlayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val videoUri = remember(videoPath) { Uri.fromFile(File(videoPath)) }
-    val player = remember(videoPath) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(videoUri))
-            seekTo(initialPositionMs.coerceAtLeast(0L))
-            this.playWhenReady = playWhenReady
-            prepare()
-        }
+    val dataSourceFactory = remember(context) {
+        DefaultDataSource.Factory(
+            context,
+            DefaultHttpDataSource.Factory()
+                .setUserAgent(YOUTUBE_PREVIEW_USER_AGENT)
+                .setDefaultRequestProperties(
+                    mapOf("Referer" to YOUTUBE_PREVIEW_REFERER)
+                )
+        )
+    }
+    val player = remember(mediaKey) {
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .build()
+            .apply {
+                setMediaItem(MediaItem.fromUri(mediaUri))
+                seekTo(initialPositionMs.coerceAtLeast(0L))
+                this.playWhenReady = playWhenReady
+                prepare()
+            }
     }
 
     LaunchedEffect(player, playWhenReady) {
@@ -3099,6 +3149,10 @@ private fun youtubeEmbedHtml(videoId: String, showControls: Boolean): String {
 }
 
 private val youtubeVideoIdRegex = Regex("^[A-Za-z0-9_-]{11}$")
+private const val YOUTUBE_PREVIEW_USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+private const val YOUTUBE_PREVIEW_REFERER = "https://www.google.com/"
 private const val SEEK_SYNC_THRESHOLD_MS = 1_000L
 
 private fun formatTime(milliseconds: Long): String {

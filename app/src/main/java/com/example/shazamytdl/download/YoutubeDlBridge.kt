@@ -282,6 +282,33 @@ object YoutubeDlBridge {
         )
     }
 
+    fun resolvePreviewVideoStreamUrl(
+        context: Context,
+        url: String,
+        cancelToken: DownloadCancelToken? = null
+    ): String {
+        init(context)
+        cancelToken?.throwIfCancelled()
+
+        val request = YoutubeDLRequest(url).apply {
+            addOption("--no-playlist")
+            addOption("-f", PREVIEW_STREAM_FORMAT)
+            addOption("--get-url")
+            addOption("--no-warnings")
+            addNetworkOptions()
+        }
+        val response = synchronized(operationLock) {
+            cancelToken?.throwIfCancelled()
+            YoutubeDL.getInstance().execute(request)
+        }
+        cancelToken?.throwIfCancelled()
+        return response.out
+            .lineSequence()
+            .map(String::trim)
+            .firstOrNull { it.startsWith("https://") || it.startsWith("http://") }
+            ?: error("yt-dlp ni vrnil pretočnega video URL-ja.")
+    }
+
     fun downloadPreviewVideo(
         context: Context,
         url: String,
@@ -415,6 +442,8 @@ object YoutubeDlBridge {
     )
 
     private val VIDEO_EXTENSIONS = setOf("mp4", "m4v")
+    private const val PREVIEW_STREAM_FORMAT =
+        "18/22/best[height<=360][ext=mp4][vcodec!=none][acodec!=none]/best[height<=480][ext=mp4][vcodec!=none][acodec!=none]/best[height<=360][vcodec!=none][acodec!=none]"
     private const val PREVIEW_VIDEO_FORMAT =
         "18/22/bestvideo[vcodec^=avc1][height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4][vcodec!=none][acodec!=none]"
 
