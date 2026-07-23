@@ -181,6 +181,18 @@ class PlayerHolder(context: Context) {
         }
     }
 
+    fun playFrom(positionMs: Long) {
+        val safePosition = positionMs.coerceAtLeast(0L)
+        withController { player ->
+            if (player.mediaItemCount == 0) return@withController
+            player.currentMediaItem?.mediaId?.let { positionsByTrack[it] = safePosition }
+            player.seekTo(safePosition)
+            player.play()
+            persistPlayerState(player)
+            updateCurrentTrack(player)
+        }
+    }
+
     fun stop() {
         withController { player ->
             player.currentMediaItem?.mediaId?.let { positionsByTrack[it] = 0L }
