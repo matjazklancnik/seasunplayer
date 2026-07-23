@@ -57,18 +57,24 @@ class VoiceSearchController(
     fun startListening() {
         val speechRecognizer = recognizer
         if (speechRecognizer == null) {
+            onListeningChanged(false)
             onErrorMessage("V napravi ni razpoložljive storitve za prepoznavanje govora.")
             return
         }
 
         cancellationRequested = false
         onListeningChanged(true)
-        speechRecognizer.startListening(
-            recognitionIntent(
-                language = defaultLanguage(),
-                enableLanguageSwitch = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        runCatching {
+            speechRecognizer.startListening(
+                recognitionIntent(
+                    language = defaultLanguage(),
+                    enableLanguageSwitch = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+                )
             )
-        )
+        }.onFailure {
+            onListeningChanged(false)
+            onErrorMessage("Glasovno iskanje ni uspelo zagnati.")
+        }
     }
 
     fun cancel() {

@@ -288,6 +288,11 @@ private fun MainScreen(
     var videoPreviewPositionMs by rememberSaveable { mutableStateOf(0L) }
     var videoPreviewIsPlaying by rememberSaveable { mutableStateOf(false) }
     var videoPreviewAudioHandedOff by rememberSaveable { mutableStateOf(false) }
+    var microphoneInterruptionToken by rememberSaveable { mutableIntStateOf(0) }
+    var microphoneResumeAudioTrackId by rememberSaveable { mutableStateOf<String?>(null) }
+    var microphoneResumeVideoPreviewTrackId by rememberSaveable { mutableStateOf<String?>(null) }
+    var voiceSearchInterruptionToken by rememberSaveable { mutableStateOf<Int?>(null) }
+    var songRecognitionInterruptionToken by rememberSaveable { mutableStateOf<Int?>(null) }
 
     fun deleteVideoPreview(path: String?) {
         if (path == null) return
@@ -326,6 +331,55 @@ private fun MainScreen(
         deleteVideoPreview(oldPath)
     }
 
+    fun pausePlaybackForMicrophoneCapture(): Int {
+        val token = microphoneInterruptionToken + 1
+        microphoneInterruptionToken = token
+        val existingResumePreviewTrackId = microphoneResumeVideoPreviewTrackId
+        val existingResumeAudioTrackId = microphoneResumeAudioTrackId
+        val activePreviewTrackId = videoPreview?.trackId
+        val shouldResumePreview = existingResumePreviewTrackId != null ||
+            (activePreviewTrackId != null && videoPreviewIsPlaying)
+        val holder = playerHolder
+        val activeAudioTrackId = holder?.currentTrackId?.value ?: playingTrackId
+        val shouldResumeAudio = !shouldResumePreview &&
+            (existingResumeAudioTrackId != null || holder?.isPlaying == true)
+
+        microphoneResumeVideoPreviewTrackId = existingResumePreviewTrackId
+            ?: if (shouldResumePreview) activePreviewTrackId else null
+        microphoneResumeAudioTrackId = existingResumeAudioTrackId
+            ?: if (shouldResumeAudio) activeAudioTrackId else null
+
+        if (shouldResumePreview) {
+            if (holder?.isPlaying == true) holder.pause()
+            videoPreviewAudioHandedOff = true
+            videoPreviewIsPlaying = false
+            isPlaying = false
+        } else if (shouldResumeAudio) {
+            holder?.pause()
+            isPlaying = false
+        }
+        return token
+    }
+
+    fun resumePlaybackAfterMicrophoneCapture(token: Int?) {
+        if (token == null || token != microphoneInterruptionToken) return
+        val resumePreviewTrackId = microphoneResumeVideoPreviewTrackId
+        val resumeAudioTrackId = microphoneResumeAudioTrackId
+        microphoneResumeVideoPreviewTrackId = null
+        microphoneResumeAudioTrackId = null
+        microphoneInterruptionToken += 1
+
+        if (resumePreviewTrackId != null && videoPreview?.trackId == resumePreviewTrackId) {
+            videoPreviewIsPlaying = true
+        } else if (
+            resumeAudioTrackId != null &&
+            (playerHolder?.currentTrackId?.value ?: playingTrackId) == resumeAudioTrackId
+        ) {
+            playerHolder?.play()
+            isPlaying = true
+        }
+    }
+
     val voiceSearchController = remember(context) {
         VoiceSearchController(
             context = context,
@@ -333,15 +387,28 @@ private fun MainScreen(
                 searchQuery = it
                 youtubeSearchRequested = false
             },
-            onListeningChanged = { isVoiceListening = it },
+            onListeningChanged = { listening ->
+                isVoiceListening = listening
+                if (!listening) {
+                    resumePlaybackAfterMicrophoneCapture(voiceSearchInterruptionToken)
+                    voiceSearchInterruptionToken = null
+                }
+            },
             onErrorMessage = { message = it }
         )
     }
+    fun startVoiceSearchWithMicrophoneCapture() {
+        val token = pausePlaybackForMicrophoneCapture()
+        voiceSearchInterruptionToken = token
+        songRecognitionJob?.cancel()
+        voiceSearchController.startListening()
+    }
+
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            voiceSearchController.startListening()
+            startVoiceSearchWithMicrophoneCapture()
         } else {
             message = "Za glasovno iskanje dovoli uporabo mikrofona."
         }
@@ -364,6 +431,9 @@ private fun MainScreen(
         }
         if (isSongListening) return
 
+        val interruptionToken = pausePlaybackForMicrophoneCapture()
+        songRecognitionInterruptionToken = interruptionToken
+        voiceSearchInterruptionToken = null
         voiceSearchController.cancel()
         songRecognitionJob?.cancel()
         songRecognitionJob = scope.launch {
@@ -392,6 +462,10 @@ private fun MainScreen(
             } finally {
                 sample?.delete()
                 isSongListening = false
+                resumePlaybackAfterMicrophoneCapture(interruptionToken)
+                if (songRecognitionInterruptionToken == interruptionToken) {
+                    songRecognitionInterruptionToken = null
+                }
                 songRecognitionJob = null
             }
         }
@@ -1035,9 +1109,9 @@ private fun MainScreen(
                                     Manifest.permission.RECORD_AUDIO
                                 ) == PackageManager.PERMISSION_GRANTED
                             ) {
-                                songRecognitionJob?.cancel()
-                                voiceSearchController.startListening()
+                                startVoiceSearchWithMicrophoneCapture()
                             } else {
+                                songRecognitionJob?.cancel()
                                 microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                             }
                         }
