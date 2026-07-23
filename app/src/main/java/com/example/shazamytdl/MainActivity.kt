@@ -25,6 +25,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -2238,6 +2240,7 @@ private fun EmptyState() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TrackCard(
     track: Track,
@@ -2278,7 +2281,12 @@ private fun TrackCard(
             ) {
                 TrackArtwork(track.artworkPath)
                 Spacer(Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable(onClick = onPlay)
+                        .padding(vertical = 4.dp)
+                ) {
                     Text(
                         track.title,
                         style = MaterialTheme.typography.titleMedium,
@@ -2340,16 +2348,17 @@ private fun TrackCard(
                 }
             }
 
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
+                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
                 TextButton(
                     onClick = onEditSource,
                     enabled = track.status != TrackStatus.QUEUED &&
                         track.status != TrackStatus.DOWNLOADING,
-                    modifier = Modifier.height(32.dp)
+                    modifier = Modifier.heightIn(min = 40.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(4.dp))
@@ -2359,7 +2368,8 @@ private fun TrackCard(
                     TextButton(
                         onClick = onPromote,
                         colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFF9800)),
-                        modifier = Modifier.height(32.dp)
+                        modifier = Modifier.heightIn(min = 40.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Icon(
                             Icons.Default.ArrowUpward,
@@ -2376,7 +2386,8 @@ private fun TrackCard(
                         colors = ButtonDefaults.textButtonColors(
                             contentColor = MaterialTheme.colorScheme.error
                         ),
-                        modifier = Modifier.height(32.dp)
+                        modifier = Modifier.heightIn(min = 40.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Icon(
                             Icons.Default.Close,
@@ -2389,7 +2400,7 @@ private fun TrackCard(
                 }
                 IconButton(
                     onClick = onDelete,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(40.dp)
                 ) {
                     Icon(
                         Icons.Default.DeleteOutline,
@@ -2405,8 +2416,8 @@ private fun TrackCard(
                     Button(
                         onClick = onDownload,
                         enabled = track.status != TrackStatus.QUEUED && track.status != TrackStatus.DOWNLOADING,
-                        contentPadding = ButtonDefaults.TextButtonContentPadding,
-                        modifier = Modifier.height(32.dp)
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.heightIn(min = 40.dp)
                     ) {
                         Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
